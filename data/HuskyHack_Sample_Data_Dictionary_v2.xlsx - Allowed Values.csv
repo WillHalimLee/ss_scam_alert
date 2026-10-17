@@ -1,0 +1,21 @@
+Field,Allowed Values,Design Note
+scenario_type (Member Key),Family Emergency; Romance / Investment; Sound Impersonation + ATO; Tech Support / Government Impersonation; Normal Activity,Normal Activity covers 50 routine members and 20 legitimate look-alikes.
+scenario_subtype (Member Key),Routine; Home purchase closing wire; Real password reset and move; Vehicle purchase cash withdrawal; Helping a real family member; Funding a new brokerage account; New contractor payments; Grandparent / fake attorney; Online partner / crypto 'investment'; Fake Sound text / credential phish; Federal investigation,
+journey_outcome (Member Key),Legitimate - No Friction; Legitimate - Confirmation Step; Legitimate - False Positive (Held); Prevented; Partial Loss; Partial Loss - Recovery Initiated; Loss; Loss - Partially Recovered,Replaces v1 outcome_status.
+event_category,Authentication; Profile; Recipient; Money Movement; Intervention; Interaction; Trusted Contact; Case & Recovery,New.
+event_type - Authentication,Login; Failed Login; Password Reset; One-Time Code Sent,v1 had no allowed-values list for event_type.
+event_type - Profile,Email Change; Phone Change; Address Change; Profile Change Alert Sent,
+event_type - Recipient,Recipient Added,
+event_type - Money Movement,Deposit; Debit Purchase; ATM Withdrawal; Bill Payment; Automatic Payment; Payment Initiated; Payment Completed; Payment Held; Payment Released; Payment Cancelled; Payment Stopped,Payment Initiated always starts as Pending. Released = completed after a hold.
+event_type - Intervention,Warning Displayed; Confirmation Requested; Employee Outreach; Employee Escalation; Account Restricted; Access Restored,
+event_type - Interaction,Branch Visit; Contact Center Call,
+event_type - Trusted Contact,Trusted Contact Offered; Trusted Contact Enrolled; Trusted Contact Notified,Notified = member chose to involve an already-enrolled contact.
+event_type - Case & Recovery,Scam Reported; Case Created; Case Closed; Recovery Request; Funds Recovered; Recovery Unsuccessful,
+channel,Mobile; Online Banking; Branch; Contact Center; ATM/Card; Back Office,ATM/Card and Back Office are new.
+payment_rail,Debit Card; ACH; Bill Pay; P2P; External Transfer; Wire; Cash; Not Applicable,Not Applicable is new.
+transaction_direction,Outgoing; Incoming; Not Applicable,Incoming is new.
+recipient_status,New; Existing; Not Applicable,New = 30 days or less.
+payment_velocity_band,Low; Medium; High; Not Applicable,
+amount_vs_member_baseline,Typical; Above Typical; Significantly Above Typical; Not Applicable,Cut-offs: 1.5x and 4x the member's 12-month 90th percentile.
+member_response,Confirmed Intended; Cancelled Payment; Reported Not Me; Requested Help; Accepted Offer; Declined Offer; Not Asked,Replaces member_confirmed.
+payment_status,Pending; Held; Completed; Cancelled by Member; Stopped by Sound; Not Applicable,Cancelled by Member for authorized scams (the member decides); Stopped by Sound for account takeover (not the member's payment).

@@ -1,0 +1,34 @@
+Field Name,Data Type,Definition,Example,Observable at Decision Time?,Useful for Prototype?,v2 Change,Notes
+event_id,Text,Unique synthetic event record ID,E00001,Yes,Reference only,Unchanged,
+synthetic_member_id,Text,Fictional member ID; joins to the Member Key,M1001,Yes,Yes - group a journey,Revised,"M1001-M1004 are the four anchor personas (Linda, Michael, Sarah, James). v1 marked this 'No'."
+event_sequence,Integer,Order of the event within the member's timeline (1 = earliest),37,Yes,Yes - replay a journey,New,"Rows are already sorted by member, then time."
+event_timestamp,DateTime,Fictional date and time of the event (Pacific),2026-10-20 14:11:00,Yes,"Yes - timing, clustering, after-hours",Revised,v1 marked this 'No' even though the kit tells teams to sort by it. Window: 2026-08-31 to 2026-10-30. Branch events fall in branch hours; Contact Center events 7am-8pm.
+day_of_week,Text,Day of week of the event,Tue,Yes,Yes - staffing and hold timing,New,Useful for showing that a hold placed Friday night may not be reviewed until Monday.
+event_category,Category,Group the event type belongs to,Money Movement,Yes,Yes - filtering,New,See Allowed Values.
+event_type,Category,Activity represented by the record,Payment Initiated,Yes,Yes,Revised,Controlled list of 37 values (see Allowed Values). Each type has fixed rules: e.g. Login never carries an amount; Debit Purchase is always Debit Card.
+channel,Category,Where the event happened,Branch,Yes,Yes,Revised,Adds ATM/Card (card and ATM activity) and Back Office (system or fraud-operations actions with no member-facing channel).
+payment_id,Text,"Links every row about the same payment (initiated, warned, held, released, cancelled, recovered)",P1001-014,Yes,Yes - follow a payment's life,New,Blank for events not tied to a payment.
+payment_rail,Category,Payment method for the linked payment,Wire,Yes,Yes,Revised,'Not Applicable' when no payment is involved (v1 put rails on logins and alerts).
+amount,Currency,Dollar amount of the linked payment or deposit; 0.00 when none,8500.00,Yes,Yes,Revised,Every row about the same payment carries the same amount. Funds Recovered rows carry the amount returned.
+transaction_direction,Category,Direction of funds,Outgoing,Yes,Yes,Revised,"Adds Incoming (paychecks, benefits, recovered funds)."
+recipient_id,Text,ID of the payee/recipient,R1001-12,Yes,Yes - repeat payments to same payee,New,Blank when no recipient applies (e.g. cash).
+recipient_status,Category,New = recipient added 30 days ago or less; Existing = older,New,Yes,Yes,Revised,"Now derived from recipient_age_days, so the two always agree."
+recipient_age_days,Integer,Days since the recipient was added,2,Yes,Yes,Revised,v1 marked this 'No'; it is the core new-recipient signal.
+days_since_last_same_rail,Integer,Days since the member last completed an outgoing payment on the same rail; blank = no prior use on record,2411,Yes,Yes - 'first wire in years',New,Replaces the kit's promised 'transaction history comparisons'. Includes history from before the data window.
+amount_to_baseline_ratio,Decimal,Payment amount divided by the member's 12-month 90th-percentile outgoing payment,5.12,Yes,Yes - set your own thresholds,New,Blank for rows without an outgoing payment.
+amount_vs_member_baseline,Category,Band of amount_to_baseline_ratio: Typical <= 1.5x; Above Typical <= 4x; Significantly Above Typical > 4x,Significantly Above Typical,Yes,Yes,Revised,"Now computed, not random. v1 labeled $150 debit purchases 'Significantly Above' and $11K scam wires 'Typical'."
+payment_velocity_band,Category,"Number of non-card payments the member initiated in the trailing 7 days, relative to their usual weekly count",High,Yes,Yes,Revised,Low <= usual+1; Medium <= usual+3; High above that. 'Not Applicable' for rows without an outgoing payment.
+available_balance_after,Currency,Member's available balance after the event (completed transactions only),21450.18,Yes,Yes - share of balance at risk,New,Lets teams see an account being drained.
+profile_change_recent,Yes/No,"Yes if an email, phone, or address change occurred in the 30 days up to and including this event",Yes,Yes,Yes,Revised,Now computed in time order. v1 flagged changes before they happened.
+password_reset_recent,Yes/No,Yes if a password reset occurred in the 7 days up to and including this event,Yes,Yes,Yes,Revised,Now computed in time order. Does not include device intelligence.
+trusted_contact_enrolled,Yes/No,Whether the member has a trusted contact on file at the time of the event,No,Yes,Yes,Revised,Changes to Yes after a Trusted Contact Enrolled event. A trusted contact has no account authority.
+warning_displayed,Yes/No,Yes only on Warning Displayed rows,Yes,Yes,Yes,Revised,Teams should improve beyond a generic warning; see event_note for the warning type shown.
+member_response,Category,What the member did when asked or warned,Confirmed Intended,Yes,Yes,New (replaces member_confirmed),Confirmed Intended; Cancelled Payment; Reported Not Me; Requested Help; Accepted Offer; Declined Offer; Not Asked.
+employee_interaction,Yes/No,Whether an employee took part in this event,Yes,Yes,Yes,Revised,"Branch, Contact Center, or back-office fraud staff."
+case_open,Yes/No,Whether the member has an open fraud/scam case at the time of the event,Yes,Yes,Yes,Revised (was case_opened),Yes from Case Created until Case Closed. A case does not imply a confirmed fraud decision.
+payment_status,Category,Status of the linked payment after this event,Held,Yes,Yes,Revised,"Pending, Held, Completed, Cancelled by Member, Stopped by Sound, Not Applicable. v1 never used Held and marked every initiated payment Completed."
+event_note,Text,"Short plain-English context for scripted events (e.g. what an employee asked, where a confirmation was sent)",Text sent to the phone number on file BEFORE the change,Partly,Yes - storytelling,New,"Human-observed context, not a machine signal. Blank for routine events."
+scenario_type,Category,(Removed from events file),,No - label,Use Member Key,Moved to Member Key,"Constant per member, so it gave away the answer. Now in HuskyHack_Member_Key_v2.csv."
+outcome_status,Category,(Removed from events file),,No - label,Use Member Key,Moved to Member Key,v1 mixed event status and scenario outcome. Replaced by journey_outcome and dollar fields in the Member Key.
+intervention_candidate,Text,(Removed from events file),,No - label,Use Member Key,Moved to Member Key,"Constant per scenario, so it gave away the answer."
+member_confirmed,Category,(Replaced),,,,Removed,"Replaced by member_response. v1 followed a fixed row-position pattern (rows 1-4 Not Asked, 5-10 No)."

@@ -1,0 +1,20 @@
+Husky Hack Sample Data Dictionary - v2
+Purpose: support student prototypes for “Stop the Scam Before the Money Moves.”
+"All people, events, values, outcomes, and identifiers are fictional and synthetic."
+
+Files
+"HuskyHack_Synthetic_Events_v2.csv - 7,471 events for 118 fictional members, 2026-08-31 to 2026-10-30. Contains only what Sound could observe at the time of each event."
+"HuskyHack_Member_Key_v2.csv - one row per member: what was really happening, the outcome, and dollars attempted / sent / prevented / recovered. Use it to check your design, not as a trigger."
+
+How to use
+"1. Start with an anchor persona: M1001 Linda, M1002 Michael, M1003 Sarah, M1004 James. Filter the events file by synthetic_member_id; rows are already in time order."
+2. Follow a single payment with payment_id to see where it could have been paused.
+"3. Test your trigger on the 20 legitimate look-alikes (Member Key: is_legitimate_lookalike = Yes). If it fires on them, design the low-friction path they experience."
+4. Triggers may use only fields marked 'Yes' under Observable at Decision Time. The Member Key is the answer key.
+
+Limits
+"The data is designed for exploration and prototyping, not for production fraud modeling or statistical benchmarking. 41% of members are scam victims by design; real prevalence is far lower, so false positives matter far more in practice than this file suggests."
+Do not infer that a field is currently available in real time at Sound. The Starter Kit's Capability Assumptions section says what teams may assume for this challenge.
+"Teams should explain how false positives, member consent, accessibility, escalation, and recovery are handled."
+Color key on the dictionary sheets: green = new in v2; yellow = revised; red = removed or moved.
+Synthetic-data governance reference: https://csrc.nist.gov/pubs/sp/800/188/final

@@ -1,0 +1,46 @@
+# Local dev infra for the Harbor pipeline. Ports are non-default on purpose (other stacks run on this machine).
+#   Kafka API (Redpanda): localhost:19092     Postgres: localhost:5439  (user/pass/db: harbor)
+# Redpanda speaks the Kafka protocol, so services use plain Kafka clients and could point at MSK/Confluent unchanged.
+name: harbor
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.1
+    container_name: harbor-redpanda
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:19092
+    ports:
+      - "127.0.0.1:19092:19092"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  postgres:
+    image: postgres:16-alpine
+    container_name: harbor-postgres
+    environment:
+      POSTGRES_USER: harbor
+      POSTGRES_PASSWORD: harbor
+      POSTGRES_DB: harbor
+    ports:
+      - "127.0.0.1:5439:5432"
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - harbor_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harbor"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+volumes:
+  harbor_pgdata:

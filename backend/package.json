@@ -1,0 +1,21 @@
+{
+  "name": "harbor-backend",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Harbor streaming pipeline: Kafka-compatible bus, rules scorer, LLM tagger, notification agent, retro job",
+  "scripts": {
+    "up": "docker compose up -d --wait",
+    "down": "docker compose down",
+    "reset": "node scripts/reset.js",
+    "seed": "node scripts/seed.js",
+    "scorer": "node services/scorer.js",
+    "tagger": "node services/tagger.js",
+    "agent": "node services/agent-service.js",
+    "replay": "node services/replayer.js",
+    "retro": "node services/retro.js --once"
+  },
+  "dependencies": {
+    "kafkajs": "2.2.4",
+    "pg": "8.13.1"
+  }
+}

@@ -1,0 +1,6 @@
+node_modules/
+.logs/
+.DS_Store
+artifact_dist/
+# organizer-provided documents, not ours to republish
+data/*.docx

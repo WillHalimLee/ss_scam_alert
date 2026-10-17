@@ -1,0 +1,15 @@
+Area,What Changed in v2,Why
+Structure,"Split into two files: Events (what Sound could observe at the time) and Member Key (answer key). scenario_type, outcome and intervention_candidate moved out of the events file.","v1 fields were constant per member, so teams could 'detect' fraud perfectly from a label."
+Population,"118 members (v1: 100): 50 routine, 20 legitimate look-alikes, 12 per scam type. 7,471 events over 61 days (v1: exactly 10 per member over 8 days).","v1 had no legitimate member who looked risky, so the required false-positive path could not be shown from data."
+Legitimate look-alikes,"New: home-closing wires, real password reset + move, vehicle cash purchase, real family help, new brokerage funding, new contractor. Some are held and released (false positives).",Supports the False-Positive path and Trust & Accessibility (20%).
+Routine noise,25% of routine members add a new P2P payee; 10% reset a forgotten password.,Routine members are no longer a perfectly clean class.
+Payment lifecycle,"Payments now move Pending -> (Warning / Confirmation / Held) -> Completed, Released, Cancelled, or Stopped, linked by payment_id.","v1 never used Held and marked every initiated payment Completed, so the 'before the money moves' moment did not exist."
+Outcomes,"Outcomes vary: 15 of 48 scam journeys fully prevented, others partial loss, loss, or recovered.",In v1 every scam member ended in a loss.
+Time order,All flags are computed from events in time order; rows are sorted; event_sequence added.,v1 flagged password resets and profile changes before they occurred and had payments before recipients were added.
+Field coherence,Each event type has fixed rules (logins have no amount; debit purchases are Debit Card; branch events in branch hours).,"v1 had 111 logins with dollar amounts, debit purchases on ACH, and branch events at 3am."
+Baseline / history,amount_vs_member_baseline computed from a ratio; new days_since_last_same_rail and amount_to_baseline_ratio.,v1 baseline band was random; 'first wire in years' could not be shown.
+Persona anchors,"M1001 Linda (Family Emergency, $8,500 wire), M1002 Michael (Romance: P2P grows, shifts to wires), M1003 Sarah (ATO), M1004 James (Government impersonation).",v1 personas did not map to any record.
+Account takeover realism,Real member's digital activity stops during takeover; confirmation can go to pre-change contact info; alert goes to old email.,"Makes the ATO design problem (phished OTP, changed contact info) visible."
+Balances and incoming funds,available_balance_after and Incoming direction added.,v1 had no balance and only outgoing funds.
+Encoding,UTF-8 without byte-order mark.,v1 header read as '\ufeffevent_id' in some tools.
+Reproducibility,generate_huskyhack_data.py (seed 2026) and validate.py included.,Organizers can regenerate or tune the data.

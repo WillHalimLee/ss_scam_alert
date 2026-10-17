@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harbor | Sound Credit Union security analyst (prototype)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo" aria-hidden="true">⚓</span><div><b>Harbor</b><small>Your personal security analyst · prototype · synthetic data only</small></div></div>
+  <nav role="tablist" aria-label="Views">
+    <button role="tab" data-tab="member" aria-selected="true">Member app</button>
+    <button role="tab" data-tab="console" aria-selected="false">Employee console <span id="badge" class="badge" hidden>0</span></button>
+    <button role="tab" data-tab="trigger" aria-selected="false">How triggers fire</button>
+    <button role="tab" data-tab="sim" aria-selected="false">Trigger simulator</button>
+    <button role="tab" data-tab="arch" aria-selected="false">Architecture</button>
+    <button role="tab" data-tab="pipe" aria-selected="false">Live pipeline</button>
+    <button role="tab" data-tab="notes" aria-selected="false">Design notes</button>
+  </nav>
+</header>
+<main id="view"></main>
+<script src="data.js"></script>
+<script src="snapshot.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

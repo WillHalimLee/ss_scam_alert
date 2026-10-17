@@ -1,0 +1,17 @@
+Field Name,Data Type,Definition,Example,v2 Change,Notes
+synthetic_member_id,Text,Joins to the events file,M1001,New file,
+anchor_persona,Text,"Starter-kit persona this member represents, if any",Linda,New file,"M1001 Linda, M1002 Michael, M1003 Sarah, M1004 James."
+scenario_type,Category,What was really happening to this member,Family Emergency,Moved from events,Normal Activity includes both routine members and legitimate look-alikes.
+scenario_subtype,Category,More specific story,Home purchase closing wire,New,See Allowed Values.
+is_legitimate_lookalike,Yes/No,Legitimate member whose activity resembles a scam or takeover,Yes,New,Use these 20 members to design and demo the false-positive path.
+journey_summary,Text,One-sentence story of the journey,,New,
+incident_start,DateTime,First event of the scam or takeover; blank for Normal Activity,,New,
+first_intervention,DateTime,"First hold, confirmation, escalation, outreach, or restriction after the incident started",,New,Compare with incident_start for time to intervention.
+journey_outcome,Category,Result for the member,Partial Loss,Moved from events (redefined),See Allowed Values.
+scam_payment_ids,Text,Semicolon-separated payment_ids that were part of the scam/takeover,P1001-061;P1001-062,New,Payment-level ground truth.
+dollars_attempted,Currency,Total of scam payments initiated,12750.00,New,
+dollars_sent,Currency,Scam payments that completed,8500.00,New,
+dollars_prevented,Currency,Scam payments cancelled or stopped before completion,4250.00,New,
+dollars_recovered,Currency,Funds returned after recovery requests,0.00,New,
+net_member_loss,Currency,dollars_sent minus dollars_recovered,8500.00,New,Synthetic only - do not report as a real-world loss figure.
+intervention_candidate,Text,Suggested design opportunity for this journey,,Moved from events,"A prompt for ideation, not a prescribed control."
