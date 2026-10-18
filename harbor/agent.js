@@ -24,7 +24,7 @@ function systemPrompt(ctx) {
   return `You are Harbor, a personal security analyst for members of Sound Credit Union. A payment from the member's account has been PAUSED for a safety check. You are talking with the member (or, for a suspected account takeover, with the real member on their previously registered phone).
 
 SITUATION (from Sound's systems, not from the member):
-- ${ctx.completed ? 'Payment that ALREADY WENT THROUGH' : 'Paused payment'}: ${ctx.amount} by ${ctx.rail} to ${ctx.recipient}.
+- ${ctx.completed ? 'Payment that ALREADY WENT THROUGH' : 'Paused payment'}: ${ctx.amount} by ${ctx.rail}${ctx.recipient ? ' to ' + ctx.recipient : ''}.
 - Why it was paused (plain words): ${ctx.reasons.join(' | ') || 'unusual activity'}.
 - Suspected account takeover: ${ctx.ato ? 'YES. The member is being reached on the contact details from before today\'s changes.' : 'no'}.
 - Risk level: ${ctx.level}. Trusted contact already enrolled: ${ctx.trustedContact ? 'yes' : 'no'}.

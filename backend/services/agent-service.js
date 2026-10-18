@@ -40,7 +40,7 @@ async function say(caseId, direction, body, source, channel, memberId) {
   return r.rows[0].id;
 }
 function ctxFrom(a) {
-  return { amount: a.amount ? money(a.amount) : '', rail: railWord(a.rail), recipient: a.recipient_status === 'New' ? 'a new recipient' : 'a recipient', reasons: a.rules ? a.rules.map((r) => r.reason) : [a.summary],
+  return { amount: a.amount ? money(a.amount) : '', rail: railWord(a.rail), recipient: a.rail === 'Cash' ? '' : a.recipient_status === 'New' ? 'someone new' : 'a recipient', reasons: a.rules ? a.rules.map((r) => r.reason) : [a.summary],
     ato: !!a.ato, level: a.level === 'confirm' || a.level === 'followup' ? 'confirm' : 'hold', completed: !!a.completed, trustedContact: !!a.trusted_contact };
 }
 async function onAlert(a) {

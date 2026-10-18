@@ -4,7 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Harbor | Sound Credit Union security analyst (prototype)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;700;800&family=Newsreader:ital,opsz,wght@0,6..72,400;1,6..72,400&display=swap">
 <link rel="stylesheet" href="style.css">
+<script>window.HARBOR_DEFAULT_THEME = 'light';</script>
+<script src="theme.js"></script>
 </head>
 <body>
 <header class="top">
@@ -18,6 +22,7 @@
     <button role="tab" data-tab="pipe" aria-selected="false">Live pipeline</button>
     <button role="tab" data-tab="notes" aria-selected="false">Design notes</button>
   </nav>
+  <button type="button" id="themeBtn" class="themebtn" aria-pressed="false">☾ Dark mode</button>
 </header>
 <main id="view"></main>
 <script src="data.js"></script>

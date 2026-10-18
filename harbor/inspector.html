@@ -4,20 +4,28 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Harbor Model Inspector</title>
+<script>window.HARBOR_DEFAULT_THEME = 'light';</script>
+<script>/* same switch and storage key as the app, so the choice carries over */
+(function(){var K='harbor-theme',r=document.documentElement;function sv(){try{var v=localStorage.getItem(K);return v==='light'||v==='dark'?v:null}catch(e){return null}}
+function ef(){var t=r.getAttribute('data-theme');if(t==='light'||t==='dark')return t;return matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}
+function pt(){var b=document.getElementById('themeBtn');if(!b)return;var d=ef()==='dark';b.textContent=d?'☀ Light mode':'☾ Dark mode';b.setAttribute('aria-pressed',String(d))}
+var s=sv();var q=new URLSearchParams(location.hash.slice(1)).get('theme');if(q==='light'||q==='dark')s=q;r.setAttribute('data-theme',s||window.HARBOR_DEFAULT_THEME);
+document.addEventListener('DOMContentLoaded',function(){pt();var b=document.getElementById('themeBtn');if(b)b.addEventListener('click',function(){var n=ef()==='dark'?'light':'dark';r.setAttribute('data-theme',n);try{localStorage.setItem(K,n)}catch(e){}pt()})})})();</script>
 <style>
-:root{--bg:#f3f6f8;--card:#fff;--ink:#14232e;--muted:#5b6b78;--line:#dbe3e9;--teal:#0b6b7a;--teal-soft:#e3f3f5;--amber:#9a5b00;--amber-soft:#fff3dc;--red:#b3261e;--red-soft:#fde8e6;--green:#1d7a46;--green-soft:#e2f4ea;--code:#eef2f5;--navy:#0f2f45}
-@media (prefers-color-scheme:dark){:root{--bg:#0c1820;--card:#13252f;--ink:#e7eef2;--muted:#9bb0bd;--line:#26404d;--teal:#4cc3d4;--teal-soft:#123741;--amber:#ffb454;--amber-soft:#3a2b10;--red:#ff8a80;--red-soft:#3d1a18;--green:#6fd69b;--green-soft:#15341f;--code:#0b1a22;--navy:#0a1d2a}}
+:root{--bg:#F2F6F9;--card:#fff;--ink:#0F1E2B;--muted:#4B5C6B;--line:#DDE5EB;--teal:#0F1E2B;--teal-soft:#E6EDF2;--on-teal:#fff;--amber:#8A5A00;--amber-soft:#FCEFD0;--red:#b3261e;--red-soft:#fde8e6;--green:#1F7A5A;--green-soft:#DDF0E8;--code:#EDF2F6;--navy:#fff;--accent:#F2B134;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0B1620;--card:#13242F;--ink:#E9F0F4;--muted:#9FB2C2;--line:#26404D;--teal:#F2B134;--teal-soft:#1C3340;--on-teal:#0F1E2B;--amber:#FFB454;--amber-soft:#1B3243;--red:#ff8a80;--red-soft:#3A2230;--green:#6fd69b;--green-soft:#15341f;--code:#0B1A22;--navy:#08121B;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0B1620;--card:#13242F;--ink:#E9F0F4;--muted:#9FB2C2;--line:#26404D;--teal:#F2B134;--teal-soft:#1C3340;--on-teal:#0F1E2B;--amber:#FFB454;--amber-soft:#1B3243;--red:#ff8a80;--red-soft:#3A2230;--green:#6fd69b;--green-soft:#15341f;--code:#0B1A22;--navy:#08121B;color-scheme:dark}
 *{box-sizing:border-box}html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;flex-direction:column}
 button,input,select{font:inherit;color:inherit}
 button{cursor:pointer}:focus-visible{outline:3px solid var(--teal);outline-offset:2px}
-header{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;padding:10px 16px;background:var(--navy);color:#fff}
+header{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;padding:10px 16px;background:var(--navy);color:var(--ink);border-bottom:1px solid var(--line)}
 header h1{font-size:16px;margin:0;font-weight:700}
 header .sp{flex:1}
-header input[type=text]{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:5px 9px;width:230px}
+header input[type=text]{background:var(--bg);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:5px 9px;width:230px}
 header label{display:flex;gap:5px;align-items:center;font-size:13px}
-.btn{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28);color:#fff;border-radius:8px;padding:5px 11px}
-.btn:hover{background:rgba(255,255,255,.24)}
+.btn{background:var(--card);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:5px 11px}
+.btn:hover{background:var(--teal-soft)}
 .dot{width:9px;height:9px;border-radius:50%;display:inline-block;background:#888;margin-right:6px}
 .dot.on{background:#4ade80}.dot.off{background:#f87171}
 .layout{flex:1;min-height:0;display:grid}
@@ -79,7 +87,8 @@ svg.tl rect.b{cursor:pointer}svg.tl rect.b:hover{opacity:.75}
 .legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11.5px;color:var(--muted);margin-top:4px}
 .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px}
 .k0{--c:#0b6b7a}.k1{--c:#c77d0a}.k2{--c:#6a4fb3}.k3{--c:#1d7a46}.k4{--c:#b3261e}.k5{--c:#5b6b78}
-@media (prefers-color-scheme:dark){.k0{--c:#4cc3d4}.k1{--c:#ffb454}.k2{--c:#b79cff}.k3{--c:#6fd69b}.k4{--c:#ff8a80}.k5{--c:#9bb0bd}}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .k0{--c:#4cc3d4}:root:not([data-theme="light"]) .k1{--c:#ffb454}:root:not([data-theme="light"]) .k2{--c:#b79cff}:root:not([data-theme="light"]) .k3{--c:#6fd69b}:root:not([data-theme="light"]) .k4{--c:#ff8a80}:root:not([data-theme="light"]) .k5{--c:#9bb0bd}}
+:root[data-theme="dark"] .k0{--c:#4cc3d4}:root[data-theme="dark"] .k1{--c:#ffb454}:root[data-theme="dark"] .k2{--c:#b79cff}:root[data-theme="dark"] .k3{--c:#6fd69b}:root[data-theme="dark"] .k4{--c:#ff8a80}:root[data-theme="dark"] .k5{--c:#9bb0bd}
 .kc{background:var(--c);fill:var(--c)}
 /* toolbar + list */
 .search{display:flex;gap:6px;align-items:center;padding:10px 10px 6px}
@@ -105,6 +114,11 @@ mark{background:#ffe27a;color:#222;border-radius:3px;padding:0 1px}
 .kbd{font-size:11px;color:var(--muted)}
 @media(max-width:860px){.layout{grid-template-columns:1fr}}
 .dash{max-height:40vh;overflow:auto;gap:8px;padding:8px 16px}
+
+.msg.user{color:var(--on-teal)}
+.tabs button[aria-selected=true]{color:var(--ink);border-color:var(--accent)}
+.row[aria-pressed=true]{box-shadow:inset 3px 0 0 var(--accent)}
+details>summary{color:var(--ink)}
 </style>
 </head>
 <body>
@@ -119,6 +133,7 @@ mark{background:#ffe27a;color:#222;border-radius:3px;padding:0 1px}
   <button class="btn" id="load">Load file…</button>
   <button class="btn" id="export">Export</button>
   <button class="btn" id="clear">Clear</button>
+  <button class="btn" id="themeBtn" type="button" aria-pressed="false">☾ Dark mode</button>
   <input type="file" id="file" accept=".jsonl,.json,.txt" hidden>
 </header>
 <section class="dash" id="dash" aria-label="Dashboard of the calls matching the current search"></section>
