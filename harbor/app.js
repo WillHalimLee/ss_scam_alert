@@ -40,6 +40,16 @@ async function checkLive() {
 }
 
 /* ---------- backend mode: the demo streams into the real pipeline (Kafka -> scorer -> Postgres -> agent) ---------- */
+/** Every action on the member's side lights up the Employee console tab, so staff know something just happened. */
+let pingTimer = null;
+function empPing(msg) {
+  if (S.tab === 'console') return;
+  S.unread++; const tab = document.querySelector('[data-tab=console]'), toast = $('#ping'); if (!tab || !toast) return;
+  tab.classList.remove('lit'); void tab.offsetWidth; tab.classList.add('lit');
+  const bd = $('#badge'); bd.hidden = false; bd.textContent = S.unread;
+  toast.textContent = msg; toast.hidden = false; toast.classList.remove('show'); void toast.offsetWidth; toast.classList.add('show');
+  clearTimeout(pingTimer); pingTimer = setTimeout(() => { toast.hidden = true; }, 5200);
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const post = (u, b) => fetch(API + u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) }).then((r) => { if (!r.ok) throw new Error('http ' + r.status); return r.json(); });
 const getState = (mid, ev) => fetch(API + '/api/demo/state?member=' + mid + (ev ? '&event=' + ev : '')).then((r) => r.json());
@@ -81,6 +91,7 @@ async function sendPayment() {
   if (be.dead) return;
   if (!level) { level = scenarioDecision(sc).level; be.view = null; }       // pipeline did not answer: fall back to the local engine
   be.phase = 'decided';
+  empPing(level === 'none' ? 'Member sent the payment: it went through' : 'Member sent the payment: Harbor held it');
   rec.phone = { step: level === 'none' ? 'sent' : level === 'hold' ? 'paused' : 'chat' }; if (rec.phone.step === 'chat') startChat(rec);
   render();
 }
@@ -294,7 +305,7 @@ function liveCtx(c) {
 async function sendLive(text) {
   const ch = S.chat, L = ch && ch.live; text = (text || '').trim().slice(0, 600);
   if (!L || !text || L.pending || ch.outcome) return;
-  S.voice.draft = ''; ch.msgs.push({ f: 'me', h: esc(text) }); ch.answers.push({ q: 'live', a: text }); L.hist.push({ role: 'user', content: text }); L.pending = true; render();
+  S.voice.draft = ''; ch.msgs.push({ f: 'me', h: esc(text) }); ch.answers.push({ q: 'live', a: text }); empPing('Member wrote: "' + (text.length > 70 ? text.slice(0, 70) + '…' : text) + '"'); L.hist.push({ role: 'user', content: text }); L.pending = true; render();
   try {
     const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), S.live.timeout);
     const cid = caseId(ch);
@@ -316,7 +327,7 @@ async function sendLive(text) {
 function liveChoose(i) {
   const ch = S.chat, L = ch.live, pick = liveChips(ch)[i]; if (!pick || L.pending) return;
   if (pick.text) return sendLive(pick.t);
-  ch.msgs.push({ f: 'me', h: esc(pick.t) }); ch.answers.push({ q: 'live-choice', a: pick.t }); mirror('in', pick.t, true);
+  ch.msgs.push({ f: 'me', h: esc(pick.t) }); ch.answers.push({ q: 'live-choice', a: pick.t }); mirror('in', pick.t, true); empPing('Member chose: "' + pick.t + '"');
   if (pick.back) L.trusted = false;
   else if (pick.go === 'trusted') { L.trusted = true; const n = node('trusted', ch.c); for (const b of n.bot) ch.queue.push({ f: 'bot', h: b }); drain(ch); }
   else finish(pick.end === 'ok' ? (ch.c.dec.level === 'confirm' ? 'release_light' : 'callback') : pick.end);
@@ -326,7 +337,7 @@ function choose(i) {
   if (S.chat.live) return liveChoose(i);
   const ch = S.chat, n = node(ch.cur, ch.c), pick = n.choices[i];
   ch.msgs.push({ f: 'me', h: esc(pick.t) });
-  ch.answers.push({ q: ch.cur, a: pick.t }); mirror('in', pick.t);
+  ch.answers.push({ q: ch.cur, a: pick.t }); mirror('in', pick.t); empPing('Member chose: "' + pick.t + '"');
   if (pick.back) { ch.path.pop(); pushNode(ch.path.pop() || 'start'); }
   else if (pick.go) pushNode(pick.go);
   else finish(pick.end === 'ok' ? (ch.c.dec.level === 'confirm' ? 'release_light' : 'callback') : pick.end);
@@ -342,7 +353,8 @@ function finish(key) {
   const L = ch.live;
   if (L) { summary.live = true; summary.signals = Object.keys(L.signals).filter((k) => L.signals[k]); summary.note = L.note; summary.state = L.state;
     summary.log.splice(summary.log.length - 1, 0, 'Harbor\'s read (' + L.provider + '): ' + (summary.signals.map((k) => SIGNAL_LABEL[k]).join(', ') || 'no risk signals') + (L.note ? '. Note: ' + L.note : '')); }
-  S.cases[ch.c.sc.mid] = summary; if (!prev) S.unread++;
+  S.cases[ch.c.sc.mid] = summary;
+  empPing('Outcome: ' + o.status);
   const cid = caseId(ch); if (cid) post('/api/cases/' + cid + '/resolve', { outcome: key }).catch(() => {});
 }
 
@@ -628,7 +640,7 @@ function employeeSay(text) {
 }
 function memberToHuman(text) {
   const ch = S.chat; text = (text || '').trim().slice(0, 600); if (!ch || !ch.human || !text) return;
-  S.voice.draft = ''; ch.msgs.push({ f: 'me', h: esc(text) }); ch.answers.push({ q: 'to-employee', a: text }); mirror('in', text, true, ch); render();
+  S.voice.draft = ''; ch.msgs.push({ f: 'me', h: esc(text) }); ch.answers.push({ q: 'to-employee', a: text }); mirror('in', text, true, ch); empPing('Member wrote to you: "' + (text.length > 70 ? text.slice(0, 70) + '…' : text) + '"'); render();
 }
 function actionsAside(k) {
   const [nt, nb] = k ? nextStep(k) : ['', ''];
@@ -662,7 +674,7 @@ function syncOne(rec) {
   if (p === 'review' || p === 'sending') { delete S.cases[mid]; return; }                         // the payment has not been sent in the demo yet: nothing is held
   const dec = scenarioDecision(sc); if (dec.level !== 'hold') return;           // pass-throughs and light checks only get a case when their chat ends
   let k = S.cases[mid];
-  if (!k) { k = S.cases[mid] = { mid, who: sc.name, tag: sc.tag, dec, status: 'Awaiting member response', answers: [], key: null, updated: 'Just now', msgs: [], stage: 'paused', log: [`Harbor paused ${money(dec.amt)} ${railWord(dec.rail)}`] }; if (S.tab !== 'console') S.unread++; }
+  if (!k) { k = S.cases[mid] = { mid, who: sc.name, tag: sc.tag, dec, status: 'Awaiting member response', answers: [], key: null, updated: 'Just now', msgs: [], stage: 'paused', log: [`Harbor paused ${money(dec.amt)} ${railWord(dec.rail)}`] }; }
   if (k.stage === 'done') return;
   if ((p === 'lock' || p === 'chat') && stageOf(k) < 2) { k.stage = 'notified'; k.log.push(`Check-in sent (${ctxOf(sc, dec).ato ? 'SMS to the phone on file before the change' : 'app notification'})`); }
   if (p === 'chat' && ch) {
@@ -994,6 +1006,8 @@ function notesHTML() {
 function render() {
   syncCase();
   document.querySelectorAll('nav [role=tab]').forEach((b) => b.setAttribute('aria-selected', b.dataset.tab === S.tab));
+  { const dev = ['sim', 'arch', 'pipe', 'notes'].includes(S.tab), db = $('#devBtn'); db.setAttribute('aria-selected', dev); db.setAttribute('aria-expanded', !!S.ui.devOpen); $('#devMenu').hidden = !S.ui.devOpen;
+    document.querySelectorAll('#devMenu [data-tab]').forEach((b) => b.setAttribute('aria-current', b.dataset.tab === S.tab ? 'page' : 'false')); }
   const bd = $('#badge'); bd.hidden = !S.unread; bd.textContent = S.unread;
   $('#view').innerHTML = { member: memberHTML, console: consoleHTML, sim: simHTML, arch: archHTML, pipe: pipeHTML, notes: notesHTML }[S.tab]();
   const cb = $('#chatbody'); if (cb) cb.scrollTop = cb.scrollHeight;
@@ -1015,6 +1029,7 @@ function showStory(id) { stopVoice(); S.voice.draft = ''; S.sc = id; S.sel = SCE
 function resetAll() { for (const id of Object.keys(S.rec)) resetStory(id); S.cases = {}; S.unread = 0; if (S.live.backend) beginStory(R()); }
 document.addEventListener('click', (ev) => {
   if (S.ui.demoOpen && !ev.target.closest('.pop, .cfgbtn')) { S.ui.demoOpen = false; render(); }
+  if (S.ui.devOpen && (!ev.target.closest('.devmenu') || ev.target.closest('a[role=menuitem]'))) { S.ui.devOpen = false; render(); }
   if (S.ui.qOpen && !ev.target.closest('.qfield')) { S.ui.qOpen = false; render(); }
 }, true);
 document.addEventListener('keydown', (ev) => {
@@ -1024,24 +1039,26 @@ document.addEventListener('keydown', (ev) => {
     else if (ev.key === 'ArrowDown') { const f = document.querySelector('#qlist .qitem'); if (f) { ev.preventDefault(); f.focus(); } }
     return;
   }
+  if (ev.key === 'Escape' && S.ui.devOpen) { S.ui.devOpen = false; render(); const b = $('#devBtn'); if (b) b.focus(); return; }
   if (ev.key === 'Escape' && S.ui.demoOpen) { S.ui.demoOpen = false; render(); const b = document.querySelector('.cfgbtn'); if (b) b.focus(); } });
 document.addEventListener('click', (ev) => {
   const t = ev.target.closest('[data-act],[data-tab]'); if (!t) return;
-  if (t.dataset.tab) { S.tab = t.dataset.tab; if (S.tab === 'console') S.unread = 0; if (S.tab === 'pipe') pipeStart(); return render(); }
+  if (t.dataset.tab) { S.ui.devOpen = false; S.tab = t.dataset.tab; if (S.tab === 'console') { S.unread = 0; const tb = document.querySelector('[data-tab=console]'); if (tb) tb.classList.remove('lit'); const pg = $('#ping'); if (pg) pg.hidden = true; } if (S.tab === 'pipe') pipeStart(); return render(); }
   const a = t.dataset.act;
   if (a === 'scn') { S.ui.demoOpen = false; showStory(t.dataset.id); }
   else if (a === 'send' && S.live.backend && S.be.phase === 'ready') { sendPayment(); return; }
   else if (a === 'send' && S.live.backend) return;
-  else if (a === 'send') { const d = scenarioDecision(SCENARIOS.find((s) => s.id === S.sc)); S.phone = { step: d.level === 'none' ? 'sent' : d.level === 'hold' ? 'paused' : 'chat' }; if (S.phone.step === 'chat') startChat(); }
+  else if (a === 'send') { const d0 = scenarioDecision(SCENARIOS.find((s) => s.id === S.sc)); empPing(d0.level === 'none' ? 'Member sent the payment: it went through' : 'Member sent the payment: Harbor held it'); const d = d0; S.phone = { step: d.level === 'none' ? 'sent' : d.level === 'hold' ? 'paused' : 'chat' }; if (S.phone.step === 'chat') startChat(); }
   else if (a === 'notify') S.phone = { step: 'lock' };
-  else if (a === 'open') { S.phone = { step: 'chat' }; startChat(); }
+  else if (a === 'open') { S.phone = { step: 'chat' }; startChat(); empPing('Member opened the chat'); }
   else if (a === 'choose') choose(+t.dataset.i);
-  else if (a === 'person') { mirror('in', 'Talk to a person', true); S.chat.msgs.push({ f: 'me', h: 'Talk to a person' }); S.chat.answers.push({ q: 'person', a: 'Talk to a person' }); finish('human'); }
+  else if (a === 'person') { empPing('Member asked to talk to a person'); mirror('in', 'Talk to a person', true); S.chat.msgs.push({ f: 'me', h: 'Talk to a person' }); S.chat.answers.push({ q: 'person', a: 'Talk to a person' }); finish('human'); }
   else if (a === 'timeout') finish('timeout');
   else if (a === 'takeover') takeOver(true);
   else if (a === 'handback') takeOver(false);
   else if (a === 'mic') { S.voice.on ? stopVoice(true) : startVoice(); return; }
   else if (a === 'demo') S.ui.demoOpen = !S.ui.demoOpen;
+  else if (a === 'dev') S.ui.devOpen = !S.ui.devOpen;
   else if (a === 'disc') S.ui.d[t.dataset.k] = !S.ui.d[t.dataset.k];
   else if (a === 'qopen') { S.ui.qOpen = true; S.ui.qText = ''; }
   else if (a === 'qpick') { S.sel = t.dataset.id; S.ui.qOpen = false; S.ui.qText = ''; }

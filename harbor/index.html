@@ -14,17 +14,26 @@
 <header class="top">
   <div class="brand"><img class="sound-logo" src="assets/sound-logo.png" alt="Sound Credit Union"><span class="logo" aria-hidden="true">⚓</span><div><b>Harbor</b><small>Your personal security analyst · prototype · synthetic data only</small></div></div>
   <nav role="tablist" aria-label="Views">
-    <button role="tab" data-tab="member" aria-selected="true">Member app</button>
-    <button role="tab" data-tab="console" aria-selected="false">Employee console <span id="badge" class="badge" hidden>0</span></button>
-    <button role="tab" data-tab="sim" aria-selected="false">Trigger simulator</button>
-    <button role="tab" data-tab="arch" aria-selected="false">Architecture</button>
-    <button role="tab" data-tab="pipe" aria-selected="false">Live pipeline</button>
-    <button role="tab" data-tab="notes" aria-selected="false">Design notes</button>
-    <a class="navlink" href="inspector.html" target="_blank" rel="noopener" title="See exactly what the model is sent and returns">Model inspector ↗</a>
+    <span class="navfill" aria-hidden="true"></span>
+    <div class="maintabs">
+      <button role="tab" data-tab="member" aria-selected="true">Member app</button>
+      <button role="tab" data-tab="console" aria-selected="false">Employee console <span id="badge" class="badge" hidden>0</span></button>
+    </div>
+    <div class="devmenu">
+      <button type="button" id="devBtn" class="devbtn" data-act="dev" aria-haspopup="menu" aria-expanded="false" aria-selected="false">Dev tools <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+      <div id="devMenu" class="devpanel" role="menu" aria-label="Dev tools" hidden>
+        <button type="button" role="menuitem" data-tab="sim">Trigger simulator</button>
+        <button type="button" role="menuitem" data-tab="arch">Architecture</button>
+        <button type="button" role="menuitem" data-tab="pipe">Live pipeline</button>
+        <button type="button" role="menuitem" data-tab="notes">Design notes</button>
+        <a role="menuitem" href="inspector.html" target="_blank" rel="noopener" title="See exactly what the model is sent and returns">Model inspector ↗</a>
+      </div>
+    </div>
   </nav>
   <button type="button" id="cfgBtn" class="cfgbtn" data-act="demo" aria-haspopup="dialog" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"></path><circle cx="16" cy="7" r="2"></circle><circle cx="8" cy="17" r="2"></circle></svg><b>Config</b><span id="cfgInfo" class="chip grey"></span></button>
   <button type="button" id="themeBtn" class="themebtn" aria-pressed="false">☾ Dark mode</button>
 </header>
+<button type="button" id="ping" class="ping" data-tab="console" role="status" aria-live="polite" hidden></button>
 <main id="view"></main>
 <div id="cfgpop"></div>
 <script src="data.js"></script>

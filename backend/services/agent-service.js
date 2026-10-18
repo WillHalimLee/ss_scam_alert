@@ -194,6 +194,7 @@ async function route(req, res) {
       await q(`update cases set status=case when status in ('awaiting_member') then 'in_conversation' else status end, due_at=null, updated_at=now() where case_id=$1`, [m[1]]);
       return json(res, 200, { ok: true });
     }
+    if (['log', 'action', 'takeover'].includes(m[2]) && !(await q('select 1 from cases where case_id=$1', [m[1]])).rowCount) return json(res, 404, { error: 'not found' });   // the story was reset while a message was in flight
     if (m[2] === 'takeover') {                                // a person takes the chat from the agent (or hands it back)
       const on = !!body.on;
       await q(`update cases set status=$2, due_at=null, updated_at=now() where case_id=$1 and status not in ('resolved')`, [m[1], on ? 'escalated_human' : 'in_conversation']);
@@ -220,6 +221,6 @@ async function route(req, res) {
     try { for (const c of (await q(`select case_id from cases where status='awaiting_member' and due_at < now()`)).rows) { await resolve(c.case_id, 'no_response', 'escalated_human'); console.log(`[agent] ${c.case_id} escalated to a human (no reply)`); } }
     catch (e) { console.error('timer', e.message); }
   }, 5000);
-  http.createServer((req, res) => route(req, res).catch((e) => { console.error('http', e.message); json(res, e.code || 500, { error: e.message }); })).listen(cfg.agentPort, () =>
+  http.createServer((req, res) => route(req, res).catch((e) => { console.error('http', e.message); json(res, Number.isInteger(e.code) && e.code >= 400 && e.code < 600 ? e.code : 500, { error: e.message }); })).listen(cfg.agentPort, () =>
     console.log(`[agent] running. API http://localhost:${cfg.agentPort}  provider: ${(llm.provider() || { name: 'none (template messages only)' }).name}`));
 })().catch((e) => { console.error(e); process.exit(1); });
