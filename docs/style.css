@@ -319,3 +319,63 @@ body.modal-open{overflow:hidden}
 /* ---- Sound Credit Union logo beside the Harbor mark ---- */
 .brand-for{color:var(--muted);font-size:14px;margin:0 2px 0 6px}
 .sound-logo{height:44px;width:auto;border-radius:8px;display:block}
+
+/* ---- employee console v2: queue on top, then an operator window ---- */
+.console2{display:flex;flex-direction:column;gap:16px}
+.qhead{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px}.qhead h2{margin:0}
+.qt{display:flex;flex-direction:column}
+.qrow{display:grid;grid-template-columns:minmax(140px,1.1fr) minmax(200px,1.5fr) minmax(170px,1.2fr) minmax(180px,1fr);gap:12px;align-items:center;text-align:left;width:100%;background:transparent;border:0;border-top:1px solid var(--line);padding:10px 12px;color:var(--ink);font-size:15px}
+.qrow.qh{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);border-top:0;padding-top:4px;padding-bottom:4px}
+button.qrow:hover{background:var(--teal-soft)}
+button.qrow[aria-pressed=true]{background:var(--teal-soft);box-shadow:inset 4px 0 0 var(--ink)}
+@media(max-width:900px){.qrow{grid-template-columns:1fr 1fr}.qrow.qh{display:none}}
+.op-h{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}.op-h h2{margin:0}
+.sum{background:var(--warn-soft);border-left:5px solid var(--warn);border-radius:12px;padding:14px 18px}
+.sum-k{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--warn-ink)}
+.sum-h{margin:4px 0 8px;font-size:21px;line-height:1.3;font-weight:800;letter-spacing:-.2px}
+.sum-p{margin:4px 0 0;font-size:15.5px;line-height:1.5}
+.sum-chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip.accent{background:var(--accent-soft);color:var(--amber)}.chip.ink{background:var(--ink);color:var(--card)}
+.txn{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:14px;align-items:stretch}
+.txn-side{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+.txn-side .k{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:2px}
+.txn-side b{font-size:17px}
+.txn-mid{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px}
+.txn-mid .amt{font-size:26px;font-weight:800;letter-spacing:-.5px;font-variant-numeric:tabular-nums}.txn-mid .arrow{font-size:26px;color:var(--muted);line-height:1}
+@media(max-width:760px){.txn{grid-template-columns:1fr}.txn-mid{flex-direction:row;gap:10px}.txn-mid .arrow{transform:rotate(90deg)}}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px 18px;margin:12px 0 0}
+.facts dt{font-size:12px;color:var(--muted);font-weight:700;letter-spacing:.04em;text-transform:uppercase}.facts dd{margin:1px 0 0;font-weight:600}
+.steps{list-style:none;margin:0;padding:0}
+.step{display:grid;grid-template-columns:34px 1fr;gap:12px;position:relative;padding-bottom:18px}
+.step:not(:last-child)::before{content:"";position:absolute;left:16px;top:34px;bottom:2px;width:2px;background:var(--line)}
+.step .dot{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:14px;background:var(--green);color:var(--card);z-index:1}
+.step.wait .dot{background:var(--card);color:var(--warn-ink);border:2px solid var(--warn)}
+.step.todo .dot{background:var(--card);color:var(--muted);border:2px dashed var(--muted)}
+.sh{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.sh b{font-size:16px}
+.sbody{margin-top:4px;font-size:14.5px;line-height:1.5;color:var(--ink)}
+.mini{margin:6px 0 0;padding-left:18px}.mini li{margin:2px 0}
+.chk{margin-top:8px;padding:8px 12px;background:var(--bg);border:1px solid var(--line);border-radius:10px;font-size:13.5px}
+.chk>b{display:block;margin-bottom:2px}.chk span{display:block}.chk .ok span:first-child{color:var(--green)}.chk .no{color:var(--muted)}.chk i{color:var(--muted);font-style:normal}
+.quote{margin-top:6px;padding:8px 12px;border-left:3px solid var(--line);background:var(--bg);border-radius:0 10px 10px 0;font-family:'Newsreader',Georgia,serif;font-size:16px;line-height:1.45}
+.discs{margin-top:14px;border-top:1px solid var(--line)}
+.disc{border-bottom:1px solid var(--line)}
+.disc-h{display:flex;width:100%;align-items:center;justify-content:space-between;gap:10px;background:transparent;border:0;padding:12px 4px;color:var(--ink);font-weight:700;font-size:15px;text-align:left}
+.disc-h:hover{background:var(--teal-soft)}
+.disc-b{padding:2px 4px 14px}
+.tl-msg{margin:6px 0;padding:8px 12px;border-radius:12px;max-width:760px;font-size:14.5px;line-height:1.45}.tl-msg span{display:block;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.7}
+.tl-msg.bot{background:var(--bg);border:1px solid var(--line)}.tl-msg.me{background:var(--ink);color:var(--card);margin-left:auto}
+.chk>span{display:block}.chk>span>span:first-child{display:inline;margin-right:6px}
+
+/* ---- case switcher: a search / dropdown bar instead of a table ---- */
+.qbox{padding:12px 14px}
+.qrowbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.qfield{position:relative;flex:1;min-width:280px}
+.qcur{display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:100%;min-height:48px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:8px 14px;color:var(--ink);text-align:left;font-size:15px}
+.qcur:hover{background:var(--teal-soft)}.qcur .chev{margin-left:auto;color:var(--muted)}
+#qsearch{width:100%;min-height:48px;border:2px solid var(--ink);border-radius:12px;padding:0 14px;font:inherit;font-size:16px;background:var(--card);color:var(--ink)}
+.qlist{position:absolute;left:0;right:0;top:calc(100% + 6px);max-height:360px;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 40px rgba(0,0,0,.28);z-index:30}
+.qitem{display:flex;gap:10px;align-items:center;flex-wrap:wrap;width:100%;text-align:left;background:transparent;border:0;border-top:1px solid var(--line);padding:10px 14px;color:var(--ink);font-size:15px}
+.qitem:first-child{border-top:0}.qitem:hover,.qitem:focus-visible,.qitem[aria-selected=true]{background:var(--teal-soft)}
+.qnav{width:44px;height:48px;border:1px solid var(--line);background:var(--bg);border-radius:12px;font-size:24px;line-height:1;color:var(--ink)}
+.qnav:hover:not(:disabled){background:var(--teal-soft)}.qnav:disabled{opacity:.4;cursor:default}
+.qhint{margin-left:auto}

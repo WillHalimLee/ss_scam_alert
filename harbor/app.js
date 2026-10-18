@@ -269,15 +269,16 @@ function choose(i) {
   render();
 }
 function finish(key) {
-  const ch = S.chat; ch.outcome = key; ch.queue = []; ch.typing = false; ch.draining = false; const o = OUTCOMES[key];
+  const ch = S.chat; ch.outcome = key; ch.queue = []; ch.typing = false; ch.draining = false; const o = OUTCOMES[key], prev = S.cases[ch.c.sc.mid];
   const summary = {
-    mid: ch.c.sc.mid, who: ch.c.sc.name, tag: ch.c.sc.tag, dec: ch.c.dec, status: o.status, answers: ch.answers.slice(), key, updated: 'Just now',
-    log: [`Harbor paused ${ch.c.amt} ${ch.c.rail}`, ...(ch.answers.length ? ['Member chat: ' + ch.answers.map((a) => '"' + a.a + '"').join(' → ')] : ['No member reply']), 'Outcome: ' + o.status],
+    mid: ch.c.sc.mid, who: ch.c.sc.name, tag: ch.c.sc.tag, dec: ch.c.dec, status: o.status, answers: ch.answers.slice(), key, updated: 'Just now', stage: 'done',
+    msgs: ch.msgs.filter((m) => m.f === 'bot' || m.f === 'me').map((m) => ({ f: m.f, t: stripHTML(m.h) })),
+    log: [...(prev ? prev.log : [`Harbor paused ${ch.c.amt} ${ch.c.rail}`]), ...(ch.answers.length ? ['Member chat: ' + ch.answers.map((a) => '"' + a.a + '"').join(' → ')] : ['No member reply']), 'Outcome: ' + o.status],
   };
   const L = ch.live;
   if (L) { summary.live = true; summary.signals = Object.keys(L.signals).filter((k) => L.signals[k]); summary.note = L.note; summary.state = L.state;
-    summary.log.splice(1, 0, 'Harbor\'s read (' + L.provider + '): ' + (summary.signals.map((k) => SIGNAL_LABEL[k]).join(', ') || 'no risk signals') + (L.note ? '. Note: ' + L.note : '')); }
-  S.cases[ch.c.sc.mid] = summary; S.unread++;
+    summary.log.splice(summary.log.length - 1, 0, 'Harbor\'s read (' + L.provider + '): ' + (summary.signals.map((k) => SIGNAL_LABEL[k]).join(', ') || 'no risk signals') + (L.note ? '. Note: ' + L.note : '')); }
+  S.cases[ch.c.sc.mid] = summary; if (!prev) S.unread++;
 }
 
 /* ---------- member view ---------- */
@@ -408,7 +409,7 @@ function micHTML(busy) {
 window.HarborVoice = { matchChip };
 
 /* ---------- collapsible panels + model log dashboards ---------- */
-S.ui = { demoOpen: false, saw: true, log: true, raw: {} };
+S.ui = { demoOpen: false, saw: true, log: true, raw: {}, d: {}, qOpen: false, qText: '' };
 S.log = { rows: [], err: null };
 function coll(k, title, body, badge) {
   const open = S.ui[k];
@@ -513,38 +514,145 @@ const COACH = {
   RAMP: ['How did you meet this person? Have you spoken on live video or met in person?', 'Has the amount they ask for been growing?', 'Have you been able to withdraw money from that platform?'],
   GENERAL: ['Who asked you to send this, and how did they contact you?', 'Has anyone told you to keep this secret or stay on the phone?', 'Can you reach the person directly on a number you already had?', 'What would happen if this waited until tomorrow?'],
 };
-function seedCases() {
-  for (const sc of SCENARIOS) {
-    const dec = scenarioDecision(sc);
-    if (dec.level === 'hold' && !S.cases[sc.mid]) S.cases[sc.mid] = { mid: sc.mid, who: sc.name, tag: sc.tag, dec, status: 'Awaiting member response', answers: [], key: null, updated: 'Waiting', log: [`Harbor paused ${money(dec.amt)} ${railWord(dec.rail)}`, 'Check-in sent. Awaiting reply (timeout 10 min)'] };
+const ACTOR = { Pipeline: 'grey', 'Rules engine': 'warn', Harbor: 'accent', Member: 'green', You: 'ink' };
+const TRIGGER = { ATO: 'Takeover pattern', RAMP: 'Slow-burn ramp', HIGHSTAKES: 'Large wire or cash', CONTACT: 'Paid right after contacting Sound', FRESH: 'Bigger payment to someone new' };
+const stripHTML = (h) => String(h).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+const memberName = (mid) => (mem[mid] && mem[mid].persona) || 'Member ' + mid;
+const txnEvent = (k) => D.events[k.mid].find((e) => e.id === k.dec.eventId) || {};
+function headline(k) {
+  const d = k.dec, ids = d.rules.map((r) => r.id), amt = money(d.amt), rail = railWord(d.rail), ev = txnEvent(k);
+  if (ids.includes('ATO')) { const m = d.resetAt ? Math.round((d.t - d.resetAt) / 60000) : null; return `Possible account takeover. ${amt} ${rail} to a new recipient${m != null ? `, ${m} minutes after a password reset and a change of email and phone` : ''}.`; }
+  if (ids.includes('RAMP')) return `Possible slow-burn scam. ${amt} ${rail} to a new recipient, after several smaller payments to people who are new to the account.`;
+  if (ids.includes('HIGHSTAKES') || ids.includes('CONTACT')) return `Large ${rail}${ev.ratio ? ` (${ev.ratio.toFixed(1)}x this member's usual)` : ''}${d.rs === 'New' ? ' to a new recipient' : ''}${ids.includes('CONTACT') ? ', started right after the member contacted Sound' : ''}. Hard to reverse once sent.`;
+  if (ids.includes('FRESH')) return `${amt} ${rail} to someone new, more than this member usually sends.`;
+  return `${amt} ${rail} flagged for a quick check.`;
+}
+/* ---------- the console follows the demo: a case exists only once the payment is sent, and fills in as things happen ---------- */
+const STAGE = { paused: 1, notified: 2, chat: 3, done: 4 };
+const stageOf = (k) => STAGE[k.stage] || 1;
+function statusChip(c) { const ok = (c.key && ['cancelled', 'release_light'].includes(c.key)) || /released|cancelled/i.test(c.status); return `<span class="chip ${ok ? 'green' : 'warn'}">${esc(c.status)}</span>`; }
+function syncCase() {
+  const sc = SCENARIOS.find((s) => s.id === S.sc), mid = sc.mid, p = S.phone.step, ch = S.chat;
+  if (p === 'review') { delete S.cases[mid]; return; }                         // the payment has not been sent in the demo yet: nothing is held
+  const dec = scenarioDecision(sc); if (dec.level !== 'hold') return;           // pass-throughs and light checks only get a case when their chat ends
+  let k = S.cases[mid];
+  if (!k) { k = S.cases[mid] = { mid, who: sc.name, tag: sc.tag, dec, status: 'Awaiting member response', answers: [], key: null, updated: 'Just now', msgs: [], stage: 'paused', log: [`Harbor paused ${money(dec.amt)} ${railWord(dec.rail)}`] }; if (S.tab !== 'console') S.unread++; }
+  if (k.stage === 'done') return;
+  if ((p === 'lock' || p === 'chat') && stageOf(k) < 2) { k.stage = 'notified'; k.log.push(`Check-in sent (${ctxOf(sc, dec).ato ? 'SMS to the phone on file before the change' : 'app notification'})`); }
+  if (p === 'chat' && ch) {
+    if (stageOf(k) < 3) { k.stage = 'chat'; k.log.push('Member opened the chat'); }
+    k.status = 'In conversation'; k.msgs = ch.msgs.filter((m) => m.f === 'bot' || m.f === 'me').map((m) => ({ f: m.f, t: stripHTML(m.h) })); k.answers = ch.answers.slice();
+    if (ch.live) { k.live = true; k.signals = Object.keys(ch.live.signals).filter((x) => ch.live.signals[x]); k.note = ch.live.note; k.state = ch.live.state; }
   }
 }
+function stateLine(k) {
+  if (k.key && OUTCOMES[k.key]) return OUTCOMES[k.key].status + '.';
+  return ['', 'Payment is paused. Harbor is about to message the member.', 'Payment is paused. The check-in has gone out. With no reply in 10 minutes it comes to you.', 'Payment is paused. The member is talking with Harbor now.'][Math.min(stageOf(k), 3)] || 'Payment is paused.';
+}
+function openingLines(k) {
+  const sc = SCENARIOS.find((s) => s.mid === k.mid), c = ctxOf(sc, k.dec);
+  const first = c.ato ? 'ato0' : c.planned ? 'planned' : k.dec.level === 'confirm' ? 'light' : 'start';
+  return node(first, c).bot.map((b) => stripHTML(typeof b === 'string' ? b : b.sys));
+}
+function convoSummary(k) {
+  const said = (k.msgs || []).filter((m) => m.f === 'me').map((m) => m.t);
+  if (!said.length && !k.answers.length) return ['', "Harbor hasn't contacted the member yet.", "No conversation yet. Harbor's check-in has gone out and the member has not replied.", 'The member has opened the chat but has not replied yet.'][Math.min(stageOf(k), 3)] || 'No conversation yet.';
+  const first = said[0] || (k.answers[0] && k.answers[0].a), bits = [`Member said: “${first}”`];
+  if (k.live) bits.push((k.signals || []).length ? 'Harbor flagged ' + k.signals.map((s) => SIGNAL_LABEL[s].toLowerCase()).join(', ') + '.' : 'Harbor saw no risk signals.');
+  if (k.note) bits.push(k.note);
+  if (k.key && OUTCOMES[k.key]) { const st = OUTCOMES[k.key].status; bits.push('Outcome: ' + (/^[A-Z]{2}/.test(st) ? st : st.charAt(0).toLowerCase() + st.slice(1)) + '.'); }
+  return bits.join(' ');
+}
+function nextStep(k) {
+  const M = { cancelled: ['Nothing to do', 'The member cancelled. Optionally add a note.'], release_light: ['Nothing to do', 'Released after a light confirmation.'], callback: ['Call the member', 'They are expecting a call. Confirm the details, then release the payment.'],
+    callback_fast: ['Call the member', 'They planned this payment. A quick callback, then release.'], human: ['Call the member now', 'They asked for a person. They already told Harbor their story, so do not make them repeat it.'],
+    override: ['Offer the recall checklist', 'The member chose to send anyway. Explain recovery is harder, and check in tomorrow.'], paused_self: ['Check in tomorrow', 'The member is verifying. Keep the payment paused.'], paused_24: ['Check in tomorrow', 'Paused for 24 hours at the member\'s request.'],
+    trusted_sent: ['Follow up', 'The trusted contact was told at the member\'s request. Offer a call.'], ato_stop: ['Secure the account', 'Call the number from before the changes, confirm recovery steps, and review the recipients.'], timeout: ['Reach out now', 'No reply. Wires and cash stay held. Call and use the open questions below.'] };
+  return M[k.key] || (stageOf(k) <= 2 ? ['Wait for the member', 'Harbor is reaching out. If they ask for a person, or do not reply in 10 minutes, it comes to you.'] : ['Be ready to step in', 'The member is talking with Harbor right now. You can follow along below.']);
+}
+function stepsFor(k) {
+  const d = k.dec, sc = SCENARIOS.find((s) => s.mid === k.mid), c = ctxOf(sc, d), st = stageOf(k), steps = [];
+  const evid = keyEvents(k.mid, d.t, 14).filter((e) => isEvidence(e, d));
+  steps.push({ a: 'Pipeline', t: 'Activity reached the pipeline', s: 'done', time: evid[0] ? fmt(evid[0].t) : '', b: evid.length ? `Events stream in as one ordered feed per member. These are the ones that mattered:<ul class="mini">${evid.map((e) => `<li><span class="muted">${fmt(e.t)}</span> ${esc(evLabel(e))}</li>`).join('')}</ul>` : 'Routine activity. Nothing unusual before the payment.' });
+  if (d.armed && d.armedAt) steps.push({ a: 'Rules engine', t: 'Account marked "elevated" (Arm)', s: 'done', time: fmt(d.armedAt), b: 'A password reset followed by a new email or phone number, close together. The member sees nothing yet. The engine just watches for a payment.' });
+  const fired = d.trace ? d.trace.filter((r) => r.fired) : [];
+  const checks = fired.map((r) => `<div class="chk"><b>${esc(TRIGGER[r.id] || r.id)}</b>${r.checks.map((x) => `<span class="${x.pass ? 'ok' : 'no'}"><span aria-hidden="true">${x.pass ? '✔' : '✖'}</span> ${esc(x.label)} <i>${esc(String(x.value))}</i></span>`).join('')}</div>`).join('');
+  steps.push({ a: 'Rules engine', t: 'Payment started, rules checked (Decide)', s: 'done', time: fmt(d.t), b: `${money(d.amt)} ${esc(railWord(d.rail))}${d.rs === 'New' ? ' to a new recipient' : ''}. ${d.rules.length === 1 ? 'One rule' : d.rules.length + ' rules'} matched, so the result is <b>${d.level === 'hold' ? 'pause the payment' : 'a light check'}</b>.${checks}${d.suppress.length ? `<div class="small">Look-alike check: ${d.suppress.map(esc).join(' ')}</div>` : ''}` });
+  steps.push({ a: 'Pipeline', t: 'Payment held and an alert raised', s: 'done', b: 'The payment stays pending instead of completing, which buys a window of minutes. The alert is saved, then published for the agent. Each member gets one case, so a second alert joins this one instead of sending another message.' });
+  const preview = (k.msgs && k.msgs.find((m) => m.f === 'bot') ? [k.msgs.find((m) => m.f === 'bot').t] : openingLines(k).slice(0, 2)).map(esc).join('<br>');
+  const way = c.ato ? 'By SMS to the phone number on file <b>before</b> the changes, never the attacker\'s session.' : 'As an app notification.';
+  steps.push(st >= 2 ? { a: 'Harbor', t: 'Check-in sent', s: 'done', b: `${way} It never asks for a password or code.<div class="quote">${preview}</div>` }
+    : { a: 'Harbor', t: 'Check-in about to be sent', s: 'wait', b: `Next, Harbor messages the member. ${way}<div class="quote">${preview}</div>` });
+  const mine = (k.msgs || []).filter((m) => m.f === 'me');
+  if (st < 2) steps.push({ a: 'Member', t: 'Not contacted yet', s: 'todo', b: 'Waiting for the check-in to go out.' });
+  else if (mine.length || k.answers.length) steps.push({ a: 'Member', t: 'Member replied', s: 'done', b: `<div class="quote">${(mine.length ? mine.map((m) => m.t) : k.answers.map((x) => x.a)).slice(0, 4).map((t) => '“' + esc(t) + '”').join('<br>')}</div>` });
+  else if (st >= 3) steps.push({ a: 'Member', t: 'Member opened the chat', s: 'wait', b: 'They are reading Harbor\'s messages and have not replied yet.' });
+  else steps.push({ a: 'Member', t: 'Waiting for the member', s: 'wait', b: 'No reply yet. With no answer in 10 minutes the case comes to you, and wires and cash stay held.' });
+  if (k.live && ((k.signals || []).length || k.note || mine.length)) steps.push({ a: 'Harbor', t: 'What Harbor understood', s: 'done', b: `${(k.signals || []).length ? k.signals.map((x) => `<span class="chip ${RED.includes(x) ? 'red' : 'grey'}">${esc(SIGNAL_LABEL[x])}</span>`).join(' ') : '<span class="muted">No risk signals.</span>'} ${k.state ? `<span class="chip ${k.state === 'calm' ? 'green' : 'warn'}">${esc(k.state)}</span>` : ''}${k.note ? `<div class="small" style="margin-top:6px"><b>Note for you:</b> ${esc(k.note)}</div>` : ''}<div class="small muted">The AI reads the words. Code decides which options the member is offered.</div>` });
+  else if (!k.live && mine.length) steps.push({ a: 'Harbor', t: 'Harbor followed its guided script', s: 'done', b: 'It asked what the payment was for, then follow-up questions based on the answers, and offered a person, a pause, or cancelling at each step.' });
+  const where = k.key && OUTCOMES[k.key] ? OUTCOMES[k.key].status : ['', 'Payment held. Check-in not sent yet', 'Awaiting member response', 'Member is talking with Harbor'][Math.min(st, 3)];
+  steps.push({ a: k.key ? 'Harbor' : 'Pipeline', t: 'Where it stands', s: k.key ? 'done' : 'wait', b: `<b>${esc(where)}</b>${k.key && OUTCOMES[k.key] ? `<div class="small muted">${esc(OUTCOMES[k.key].text)}</div>` : ''}` });
+  const [nt, nb] = nextStep(k);
+  steps.push({ a: 'You', t: 'Your next step: ' + nt, s: 'todo', b: esc(nb) });
+  return steps;
+}
+function disc(k, title, body) {
+  const o = !!S.ui.d[k];
+  return `<div class="disc"><button type="button" class="disc-h" data-act="disc" data-k="${k}" aria-expanded="${o}"><span>${title}</span><svg class="chev ${o ? 'open' : ''}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>${o ? `<div class="disc-b">${body}</div>` : ''}</div>`;
+}
+function txnHTML(k) {
+  const d = k.dec, ev = txnEvent(k), cash = d.rail === 'Cash';
+  const to = cash ? `<b>Cash withdrawal</b><div>Handed over at the branch</div><div class="small muted">No recipient account</div>` :
+    `<b>${esc(ev.rid || 'Recipient')}</b><div>${d.rs === 'New' ? 'New recipient' : 'Existing recipient'}</div><div class="small muted">${ev.rage != null ? (ev.rage === 0 ? 'Added today' : 'Added ' + ev.rage + ' days ago') : ''}</div>`;
+  const facts = [['Method', esc(railWord(d.rail).replace(/^./, (m) => m.toUpperCase())) + (ev.ch ? ' · ' + esc(ev.ch) : '')], ['Started', fmt(d.t)], ['Payment ID', esc(d.pid || ev.pid || '–')], ['Payment status', k.key === 'cancelled' ? 'Cancelled' : k.key === 'release_light' ? 'Released' : 'Held by Harbor'],
+    ['Compared with usual', ev.ratio != null ? ev.ratio.toFixed(1) + 'x' + (ev.vs && ev.vs !== 'Not Applicable' ? ' · ' + esc(ev.vs.toLowerCase()) : '') : '–'], ['Payment speed', ev.vel && ev.vel !== 'Not Applicable' ? esc(ev.vel.toLowerCase()) : '–']];
+  return `<div class="txn"><div class="txn-side"><div class="k">From</div><b>${esc(memberName(k.mid))}</b><div>Checking account</div><div class="small muted">Member ${esc(k.mid)}${ev.bal != null ? ' · balance ' + money(ev.bal) : ''}</div></div>
+    <div class="txn-mid"><div class="amt">${money(d.amt)}</div><div class="arrow" aria-hidden="true">→</div></div>
+    <div class="txn-side"><div class="k">To</div>${to}</div></div>
+    <dl class="facts">${facts.map(([a, b]) => `<div><dt>${a}</dt><dd>${b}</dd></div>`).join('')}</dl>`;
+}
+function qListHTML() {
+  const q = (S.ui.qText || '').trim().toLowerCase();
+  const ids = Object.keys(S.cases).filter((id) => { const c = S.cases[id], f = c.dec.rules[0]; return !q || [memberName(id), id, money(c.dec.amt), c.dec.rail, f && TRIGGER[f.id], c.status].join(' ').toLowerCase().includes(q); });
+  if (!Object.keys(S.cases).length) return '<p class="muted small" style="padding:12px 14px;margin:0">Nothing is held yet. Run a story in the Member app and press Send payment.</p>';
+  if (!ids.length) return `<p class="muted small" style="padding:12px 14px;margin:0">No held payment matches “${esc(S.ui.qText)}”.</p>`;
+  return ids.map((id) => { const c = S.cases[id], f = c.dec.rules[0];
+    return `<button type="button" class="qitem" role="option" data-act="qpick" data-id="${id}" aria-selected="${id === S.sel}"><b>${esc(memberName(id))}</b><span class="small muted">${esc(id)}</span><span>${money(c.dec.amt)} ${esc(c.dec.rail)}</span>${f ? `<span class="chip grey">${esc(TRIGGER[f.id] || f.id)}</span>` : ''}${statusChip(c)}</button>`; }).join('');
+}
 function consoleHTML() {
-  seedCases();
-  // The console follows the demo: only the story picked in Demo controls is shown.
-  const sc = SCENARIOS.find((x) => x.id === S.sc), ids = Object.keys(S.cases).filter((id) => id === sc.mid);
-  if (!ids.length) {
+  const sc = SCENARIOS.find((x) => x.id === S.sc), ids = Object.keys(S.cases);
+  const selId = S.sel && (S.cases[S.sel] || S.sel === sc.mid) ? S.sel : sc.mid;
+  const k = S.cases[selId];
+  const chipFor = statusChip;
+  S.sel = selId;
+  const first = (c) => c.dec.rules[0], trig = (c) => (first(c) ? `<span class="chip grey">${esc(TRIGGER[first(c).id] || first(c).id)}</span>` : '');
+  const cur = S.cases[selId], at = ids.indexOf(selId);
+  const label = cur ? `<b>${esc(memberName(selId))}</b> <span class="small muted">${esc(selId)}</span><span>${money(cur.dec.amt)} ${esc(cur.dec.rail)}</span>${trig(cur)}${chipFor(cur)}`
+    : `<b>${esc(memberName(sc.mid))}</b> <span class="small muted">${esc(sc.mid)}</span>${scenarioDecision(sc).level === 'hold' && S.phone.step === 'review' ? '<span class="chip warn">Payment not sent yet</span>' : '<span class="chip green">No held payment</span>'}`;
+  const queue = `<section class="card qbox"><div class="qrowbar">
+    <div class="qfield">${S.ui.qOpen ? `<input id="qsearch" type="search" autocomplete="off" aria-label="Search held payments" placeholder="Search by name, amount, method, rule or status…" value="${esc(S.ui.qText)}"><div class="qlist" id="qlist" role="listbox">${qListHTML()}</div>`
+      : `<button type="button" class="qcur" data-act="qopen" aria-haspopup="listbox" aria-expanded="false">${label}<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>`}</div>
+    </div></section>`;
+  if (!k) {
     const dec = scenarioDecision(sc);
-    return `<div class="console"><section><h2>Held payments</h2><p class="muted small">Following the demo: <b>${esc(sc.name)} · ${esc(sc.tag)}</b>. Change the story in Demo controls (Member app tab).</p></section>
-      <section class="card"><h2>${esc(sc.name)} · ${esc(sc.tag)} <span class="chip grey">${esc(sc.mid)}</span></h2>
-      <p><span class="chip green">No case</span> ${dec.level === 'none' ? 'Harbor let this payment through, so there is nothing for staff to review.' : 'Harbor asked a light question and released the payment, so no case was opened.'}</p>
-      ${dec.level === 'none' ? `<p class="small muted">${noFlagExplain(sc.mid, dec)}</p>` : ''}
-      <p class="small muted">That is the point for this story: a legitimate member goes through without a hold or a phone call. Finish the chat in the Member app to see how it ends.</p></section></div>`;
+    return `<div class="console2">${queue}<section class="card"><h2>${esc(sc.name)} · ${esc(sc.tag)} <span class="chip grey">${esc(sc.mid)}</span></h2>
+      ${dec.level === 'hold' && S.phone.step === 'review' ? `<p><span class="chip warn">Not sent yet</span> The payment in this story has not been sent. When you press <b>Send payment</b> on the phone in the Member app, Harbor evaluates it and the held payment appears here, filling in as the demo goes.</p>` : ''}${dec.level === 'hold' && S.phone.step === 'review' ? '' : `<p><span class="chip green">No case</span> ${dec.level === 'none' ? 'Harbor let this payment through, so there is nothing for staff to review.' : 'Harbor asked a light question and released the payment, so no case was opened.'}</p>
+      ${dec.level === 'none' ? `<p class="small muted">${noFlagExplain(sc.mid, dec)}</p>` : ''}<p class="small muted">That is the point for this story: a legitimate member goes through without a hold or a phone call.</p>`}</section></div>`;
   }
-  S.sel = ids[0];
-  const list = ids.map((id) => { const k = S.cases[id]; return `<button class="case" data-act="case" data-id="${id}" aria-pressed="${id === S.sel}"><b>${esc(k.who)} · ${money(k.dec.amt)} ${esc(k.dec.rail)}<span class="small muted">${esc(k.updated)}</span></b><span class="chip ${k.key && ['cancelled', 'release_light'].includes(k.key) ? 'green' : 'warn'}">${esc(k.status)}</span></button>`; }).join('');
-  const k = S.cases[S.sel], isRamp = k.dec.rules.some((r) => r.id === 'RAMP'), isAto = k.dec.rules.some((r) => r.id === 'ATO');
+  S.sel = selId;
+  const d = k.dec, isRamp = d.rules.some((r) => r.id === 'RAMP'), isAto = d.rules.some((r) => r.id === 'ATO');
   const coach = (isAto ? COACH.ATO : isRamp ? COACH.RAMP : COACH.GENERAL).map((q) => `<li>${esc(q)}</li>`).join('');
-  const chat = k.answers.length ? k.answers.map((a) => `<li>${esc(a.a)}</li>`).join('') : '<li class="muted">No reply yet</li>';
-  return `<div class="console"><section><h2>Held payments</h2><p class="muted small">Following the demo: <b>${esc(sc.name)} · ${esc(sc.tag)}</b>. Change the story in Demo controls (Member app tab). Finish the chat to see the case update here.</p>${list}</section>
-    <section class="card"><h2>${esc(k.who)} · ${esc(k.tag)} <span class="chip grey">${esc(k.mid)}</span></h2>
-      <p><b>${money(k.dec.amt)}</b> ${esc(railWord(k.dec.rail))} · ${esc(k.dec.rs === 'New' ? 'new recipient' : 'existing recipient')} · status: <b>${esc(k.status)}</b></p>
-      <h3>Why Harbor paused</h3>${k.dec.rules.map((r) => `<div class="why"><b>${esc(r.label)}</b><br>${esc(r.reason)}</div>`).join('')}
-      <h3>What the member told Harbor (so they don't repeat themselves)</h3><ul class="coach">${chat}</ul>
-      ${k.live ? `<p>${(k.signals || []).map((x) => `<span class="chip ${RED.includes(x) ? 'red' : 'grey'}">${esc(SIGNAL_LABEL[x])}</span>`).join('') || '<span class="muted small">No risk signals</span>'}</p><p class="small"><b>AI handoff note:</b> ${esc(k.note || '-')}</p>` : ''}
-      <h3>Event timeline</h3>${timelineHTML(k.mid, k.dec, 8)}
-      <h3>Conversation coach: open questions, no blame</h3><ul class="coach">${coach}</ul>
-      <p class="small muted">Say: "I'm checking because it's your money." Avoid: "suspicious", "you've been scammed".</p>
+  const risk = d.rules.some((r) => ['ATO', 'RAMP', 'HIGHSTAKES', 'CONTACT'].includes(r.id)) ? ['High risk', 'red'] : ['Medium risk', 'warn'];
+  const transcript = (k.msgs || []).length ? k.msgs.map((m) => `<div class="tl-msg ${m.f}"><span>${m.f === 'me' ? 'Member' : 'Harbor'}</span>${esc(m.t)}</div>`).join('') : openingLines(k).map((t) => `<div class="tl-msg bot"><span>Harbor</span>${esc(t)}</div>`).join('') + '<p class="small muted">Member has not replied yet.</p>';
+  return `<div class="console2">${queue}
+    <section class="card op"><div class="op-h"><h2>${esc(memberName(k.mid))} · ${esc(k.tag)} <span class="chip grey">${esc(k.mid)}</span></h2>${chipFor(k)}</div>
+      <div class="sum"><div class="sum-k">What this is about</div><p class="sum-h">${esc(headline(k))}</p>
+        <div class="sum-chips"><span class="chip ${risk[1]}">${risk[0]}</span>${d.rules.map((r) => `<span class="chip grey">${esc(TRIGGER[r.id] || r.id)}</span>`).join('')}<span class="chip grey">${isAto ? 'SMS to the old phone' : 'App notification'}</span></div>
+        <div class="sum-k" style="margin-top:12px">Conversation so far</div><p class="sum-p">${esc(convoSummary(k))}</p><p class="small" style="margin:6px 0 0"><b>Status:</b> ${esc(stateLine(k))}</p></div>
+      <h3>Transaction</h3>${txnHTML(k)}
+      <h3>What happened, step by step</h3>
+      <ol class="steps">${stepsFor(k).map((s, i) => `<li class="step ${s.s}"><span class="dot" aria-hidden="true">${s.s === 'done' ? '✓' : s.s === 'wait' ? '…' : i + 1}</span><div class="sb"><div class="sh"><b>${esc(s.t)}</b><span class="chip ${ACTOR[s.a]}">${s.a}</span>${s.time ? `<span class="muted small">${esc(s.time)}</span>` : ''}</div><div class="sbody">${s.b}</div></div></li>`).join('')}</ol>
+      <h3>Your actions</h3>
       <div class="actions">
         <button class="btn sm" data-act="cact" data-v="Employee called member on pre-change number">Call member (pre-change number)</button>
         <button class="btn alt sm" data-act="cact" data-v="Payment released by employee after verification">Release payment</button>
@@ -552,7 +660,12 @@ function consoleHTML() {
         <button class="btn alt sm" data-act="cact" data-v="Offered trusted contact (member's choice)">Offer trusted contact</button>
         <button class="btn alt sm" data-act="cact" data-v="Escalated to fraud team; case created">Escalate to fraud team</button>
         <button class="btn danger sm" data-act="cact" data-v="Recovery started: wire recall / dispute checklist opened">Start recovery</button></div>
-      <h3>Case log</h3><div class="log">${k.log.map((l) => '• ' + esc(l)).join('<br>')}</div></section></div>`;
+      <div class="discs">
+        ${disc('tx', 'Full conversation', transcript)}
+        ${disc('ev', 'Evidence timeline', timelineHTML(k.mid, d, 8))}
+        ${disc('coach', 'Conversation coach: open questions, no blame', `<ul class="coach">${coach}</ul><p class="small muted">Say: "I'm checking because it's your money." Avoid: "suspicious", "you've been scammed".</p>`)}
+        ${disc('log', 'Case log', `<div class="log">${k.log.map((l) => '• ' + esc(l)).join('<br>')}</div>`)}
+      </div></section></div>`;
 }
 
 /* ---------- simulator ---------- */
@@ -814,24 +927,34 @@ function notesHTML() {
 
 /* ---------- render + events ---------- */
 function render() {
+  syncCase();
   document.querySelectorAll('nav [role=tab]').forEach((b) => b.setAttribute('aria-selected', b.dataset.tab === S.tab));
   const bd = $('#badge'); bd.hidden = !S.unread; bd.textContent = S.unread;
   $('#view').innerHTML = { member: memberHTML, console: consoleHTML, trigger: triggerHTML, sim: simHTML, arch: archHTML, pipe: pipeHTML, notes: notesHTML }[S.tab]();
   const cb = $('#chatbody'); if (cb) cb.scrollTop = cb.scrollHeight;
   document.body.classList.toggle('modal-open', !!S.ui.demoOpen);
+  if (S.ui.qOpen && S.tab === 'console') { const qi = document.getElementById('qsearch'); if (qi && document.activeElement !== qi) { qi.focus(); qi.setSelectionRange(qi.value.length, qi.value.length); } }
   if (S.ui.demoOpen && !S.ui.popFocused) { S.ui.popFocused = true; const x = document.querySelector('.pop-x'); if (x) x.focus(); }
   if (!S.ui.demoOpen) S.ui.popFocused = false;
 }
 function reset() { stopVoice(); S.voice.draft = ''; S.voice.err = null; S.phone = { step: 'review' }; S.chat = null; S.log.rows = []; }
 document.addEventListener('click', (ev) => {
   if (S.ui.demoOpen && !ev.target.closest('.pop, .demo-btn')) { S.ui.demoOpen = false; render(); }
+  if (S.ui.qOpen && !ev.target.closest('.qfield')) { S.ui.qOpen = false; render(); }
 }, true);
-document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && S.ui.demoOpen) { S.ui.demoOpen = false; render(); const b = document.querySelector('.demo-btn'); if (b) b.focus(); } });
+document.addEventListener('keydown', (ev) => {
+  if (ev.target.id === 'qsearch') {
+    if (ev.key === 'Escape') { S.ui.qOpen = false; render(); }
+    else if (ev.key === 'Enter') { const f = document.querySelector('#qlist .qitem'); if (f) { ev.preventDefault(); f.click(); } }
+    else if (ev.key === 'ArrowDown') { const f = document.querySelector('#qlist .qitem'); if (f) { ev.preventDefault(); f.focus(); } }
+    return;
+  }
+  if (ev.key === 'Escape' && S.ui.demoOpen) { S.ui.demoOpen = false; render(); const b = document.querySelector('.demo-btn'); if (b) b.focus(); } });
 document.addEventListener('click', (ev) => {
   const t = ev.target.closest('[data-act],[data-tab]'); if (!t) return;
   if (t.dataset.tab) { S.tab = t.dataset.tab; if (S.tab === 'console') S.unread = 0; if (S.tab === 'pipe') pipeStart(); return render(); }
   const a = t.dataset.act;
-  if (a === 'scn') { S.sc = t.dataset.id; S.ui.demoOpen = false; reset(); }
+  if (a === 'scn') { S.sc = t.dataset.id; S.sel = SCENARIOS.find((x) => x.id === t.dataset.id).mid; S.ui.demoOpen = false; reset(); }
   else if (a === 'send') { const d = scenarioDecision(SCENARIOS.find((s) => s.id === S.sc)); S.phone = { step: d.level === 'none' ? 'sent' : d.level === 'hold' ? 'paused' : 'chat' }; if (S.phone.step === 'chat') startChat(); }
   else if (a === 'notify') S.phone = { step: 'lock' };
   else if (a === 'open') { S.phone = { step: 'chat' }; startChat(); }
@@ -840,6 +963,10 @@ document.addEventListener('click', (ev) => {
   else if (a === 'timeout') finish('timeout');
   else if (a === 'mic') { S.voice.on ? stopVoice(true) : startVoice(); return; }
   else if (a === 'demo') S.ui.demoOpen = !S.ui.demoOpen;
+  else if (a === 'disc') S.ui.d[t.dataset.k] = !S.ui.d[t.dataset.k];
+  else if (a === 'qopen') { S.ui.qOpen = true; S.ui.qText = ''; }
+  else if (a === 'qpick') { S.sel = t.dataset.id; S.ui.qOpen = false; S.ui.qText = ''; }
+  else if (a === 'qstep') { const ids = Object.keys(S.cases); if (ids.length) { const i = ids.indexOf(S.sel); S.sel = ids[(i + (+t.dataset.d) + ids.length) % ids.length]; } S.ui.qOpen = false; }
   else if (a === 'coll') { S.ui[t.dataset.k] = !S.ui[t.dataset.k]; if (t.dataset.k === 'log' && S.ui.log) refreshLog(); }
   else if (a === 'rawt') S.ui.raw[t.dataset.id] = !S.ui.raw[t.dataset.id];
   else if (a === 'reset') { S.ui.demoOpen = false; reset(); }
@@ -865,6 +992,7 @@ document.addEventListener('change', (ev) => {
 });
 document.addEventListener('input', (ev) => {
   const t = ev.target; if (t.id === 'livein') { S.voice.draft = t.value; return; }
+  if (t.id === 'qsearch') { S.ui.qText = t.value; const l = document.getElementById('qlist'); if (l) l.innerHTML = qListHTML(); return; }
   if (t.dataset.act !== 'slider') return;
   S.sim.cfg[t.dataset.k] = +t.value; const pos = document.activeElement === t; render();
   if (pos) { const n = document.querySelector(`[data-k="${t.dataset.k}"]`); if (n) n.focus(); }
