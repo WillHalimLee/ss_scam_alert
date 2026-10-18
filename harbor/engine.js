@@ -1,4 +1,4 @@
-/* Harbor trigger engine: event-based, two stages (Arm, Decide). Runs in browser and node. */
+/* Harbor trigger engine: event-based, two stages: flag the account, then check each payment. Runs in browser and node. */
 (function (root) {
   const MIN = 60000, HOUR = 3600000, DAY = 86400000;
 
@@ -32,14 +32,14 @@
         case 'Recipient Added': st.recipAdded[e.rid] = e.t; break;
         case 'Branch Visit': case 'Contact Center Call': st.lastContact = e.t; break;
       }
-      // Stage 1: Arm (silent). Reset + a contact-detail change inside 24h.
+      // Stage 1: flag the account as at risk (silent; internally "armed"). Reset + a contact-detail change inside 24h.
       if (st.armedAt === null && st.reset !== null && (st.email !== null || st.phone !== null) &&
           Math.abs((st.email ?? st.phone) - st.reset) < DAY) {
         st.armedAt = e.t;
       }
       if (!isOutgoingPayment(e)) return null;
 
-      // Stage 2: Decide, evaluated at Payment Initiated.
+      // Stage 2: check the payment, evaluated at Payment Initiated.
       const rules = [];
       let level = 'none';
       const bump = (l) => { if (l === 'hold' || level === 'none') level = l; };

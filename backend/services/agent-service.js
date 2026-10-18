@@ -106,6 +106,7 @@ async function resolve(id, outcome, status) {
 /* ---------- demo: stream a story into the pipeline, read back what it decided ---------- */
 const readBody = (req) => new Promise((ok) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 20000) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(b || '{}')); } catch { ok({}); } }); });
 const iso = (d) => (d ? new Date(d).toISOString() : null);
+const streams = new Map();                                                         // member -> current stream id; a newer start cancels an older one
 async function demoStart(mid, planned) {
   if (!demo.known(mid)) throw Object.assign(new Error('unknown member'), { code: 404 });
   const t = demo.triggerFor(mid, planned); if (!t) throw Object.assign(new Error('no trigger payment for this story'), { code: 422 });
@@ -113,8 +114,11 @@ async function demoStart(mid, planned) {
   if (cs.length) { await q('delete from messages where case_id = any($1)', [cs]); await q('delete from case_alerts where case_id = any($1)', [cs]); await q('delete from cases where case_id = any($1)', [cs]); }
   for (const tb of ['decisions', 'alerts', 'event_notes', 'review_queue', 'retro_findings', 'member_state', 'events']) await q(`delete from ${tb} where member_id=$1`, [mid]);
   await K.send(prod, cfg.topics.raw, mid, { schema: 1, type: '__reset', member_id: mid, planned: planned || null, ts: new Date().toISOString() });
-  const hist = demo.historyOf(mid, t);
-  for (let i = 0; i < hist.length; i += 200) await Promise.all(hist.slice(i, i + 200).map((e) => K.send(prod, cfg.topics.raw, mid, e)));
+  const hist = demo.historyOf(mid, t), gen = (streams.get(mid) || 0) + 1, gap = Math.max(10, Math.min(60, 3000 / Math.max(1, hist.length)));
+  streams.set(mid, gen);
+  (async () => {                                                                   // events arrive over a few seconds, like a live feed, so the UI can show them being consumed
+    for (const e of hist) { if (streams.get(mid) !== gen) return; await K.send(prod, cfg.topics.raw, mid, e); await new Promise((r) => setTimeout(r, gap)); }
+  })().catch((e) => console.error('[demo] stream', e.message));
   return { triggerEventId: t.eventId, historyTotal: hist.length, trigger: { amount: t.event.amt, rail: t.event.rail, recipient: t.event.rs } };
 }
 async function demoSend(mid, eventId) {
@@ -179,7 +183,7 @@ async function route(req, res) {
   let m = p.match(/^\/api\/cases\/([\w-]+)$/); if (m) { const d = await caseDetail(m[1]); return d ? json(res, 200, d) : json(res, 404, { error: 'not found' }); }
   if (p === '/api/review') return json(res, 200, (await q(`select r.id, r.event_id, r.member_id, r.reason, r.status, r.created_at, n.tag, n.risk from review_queue r left join event_notes n on n.event_id=r.event_id order by r.id desc limit 40`)).rows);
   if (p === '/api/retro') return json(res, 200, (await q('select finding_key, member_id, kind, summary, created_at from retro_findings order by created_at desc limit 40')).rows);
-  m = p.match(/^\/api\/cases\/([\w-]+)\/(reply|resolve|log|action)$/);
+  m = p.match(/^\/api\/cases\/([\w-]+)\/(reply|resolve|log|action|takeover)$/);
   if (m && req.method === 'POST') {
     const body = await readBody(req);
     if (m[2] === 'reply') return json(res, 200, await reply(m[1], body.text));
@@ -189,6 +193,11 @@ async function route(req, res) {
       await say(m[1], dir, String(body.text || '').slice(0, 600), String(body.source || 'script').slice(0, 20), c.channel, c.member_id, null, false);
       await q(`update cases set status=case when status in ('awaiting_member') then 'in_conversation' else status end, due_at=null, updated_at=now() where case_id=$1`, [m[1]]);
       return json(res, 200, { ok: true });
+    }
+    if (m[2] === 'takeover') {                                // a person takes the chat from the agent (or hands it back)
+      const on = !!body.on;
+      await q(`update cases set status=$2, due_at=null, updated_at=now() where case_id=$1 and status not in ('resolved')`, [m[1], on ? 'escalated_human' : 'in_conversation']);
+      await say(m[1], 'system', on ? 'A Sound team member took over the chat.' : 'The chat was handed back to Harbor.', 'employee'); return json(res, 200, { ok: true });
     }
     if (m[2] === 'action') { await say(m[1], 'system', String(body.text || '').slice(0, 300), 'employee'); return json(res, 200, { ok: true }); }
     const status = ['human', 'no_response', 'timeout', 'callback', 'callback_fast', 'ato_stop'].includes(body.outcome) ? 'escalated_human' : 'resolved';

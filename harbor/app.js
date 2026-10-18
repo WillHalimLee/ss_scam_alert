@@ -45,9 +45,9 @@ const post = (u, b) => fetch(API + u, { method: 'POST', headers: { 'content-type
 const getState = (mid, ev) => fetch(API + '/api/demo/state?member=' + mid + (ev ? '&event=' + ev : '')).then((r) => r.json());
 const caseId = (ch = S.chat) => (S.live.backend && ch && ch.cid) || null;
 const openingText = () => { const v = S.be.view; const m = v && v.messages && v.messages.find((x) => x.direction === 'out'); return m ? m.body : null; };
-function mirror(dir, text, force, ch = S.chat) {                           // scripted chat -> the real case (stored, not delivered)
+function mirror(dir, text, force, ch = S.chat, src = 'script') {                           // scripted chat -> the real case (stored, not delivered)
   const cid = caseId(ch); if (!cid || !text || (ch.live && !force)) return;
-  post('/api/cases/' + cid + '/log', { direction: dir, text, source: 'script' }).catch(() => {});
+  post('/api/cases/' + cid + '/log', { direction: dir, text, source: src }).catch(() => {});
 }
 async function beginStory(rec = R()) {
   if (!S.live.backend) return;
@@ -127,12 +127,12 @@ function isEvidence(e, dec) {
   if (ids.includes('RAMP') && e.type === 'Payment Initiated' && e.dir === 'Outgoing' && e.rail === 'P2P' && (e.rs === 'New' || (e.rage != null && e.rage <= 30))) return true;
   return false;
 }
-function timelineHTML(mid, dec, n = 12) {
-  const evs = keyEvents(mid, dec.t, n);
+function timelineHTML(mid, dec, n = 12, upto = Infinity) {
+  const evs = D.events[mid].filter((e, i) => i < upto && KEY.includes(e.type) && e.t <= dec.t && !(e.type === 'Payment Initiated' && e.dir !== 'Outgoing')).slice(-n);
   const any = evs.some((e) => isEvidence(e, dec));
   return (any ? '<p class="small muted" style="margin:0 0 6px">Orange events fed the rule that fired.</p>' : '') + '<ul class="tl">' + evs.map((e) => {
     const cls = e.id === dec.eventId ? 'trigger' : isEvidence(e, dec) ? 'hit' : '';
-    return `<li class="${cls}"><time>${fmt(e.t)}</time><span>${esc(evLabel(e))}${e.id === dec.eventId ? ' ← <b>Decide</b> stage runs here' : ''}</span></li>`;
+    return `<li class="${cls}"><time>${fmt(e.t)}</time><span>${esc(evLabel(e))}${e.id === dec.eventId ? ' ← <b>Harbor checks the payment here</b>' : ''}</span></li>`;
   }).join('') + '</ul>';
 }
 function levelChip(l) { return l === 'hold' ? '<span class="chip red">Pause &amp; ask</span>' : l === 'confirm' ? '<span class="chip amber">Light check</span>' : '<span class="chip green">No friction</span>'; }
@@ -255,12 +255,12 @@ function drain(ch) {
   ch.draining = true;
   const calm = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
   const step = () => {
-    if (ch.dead) return;                                                  // the scenario was reset
+    if (ch.dead || ch.human) return;                                      // the scenario was reset, or a person took over
     if (!ch.queue.length) { ch.typing = false; ch.draining = false; render(); return; }
     ch.typing = true; render();
     const wait = calm ? 150 : 700 + Math.min(1200, ch.queue[0].h.replace(/<[^>]+>/g, '').length * 12);   // about 1-2 s per message
     setTimeout(() => {
-      if (ch.dead || !ch.queue.length) return;                            // member took over meanwhile
+      if (ch.dead || ch.human || !ch.queue.length) return;                // member took over meanwhile
       const nm = ch.queue.shift(); ch.msgs.push(nm); if (nm.f === 'bot') mirror('out', stripHTML(nm.h), false, ch); ch.typing = false; render();
       setTimeout(step, calm ? 0 : 650);                                         // a beat; longer than the ease-in, so it is never cut short
     }, wait);
@@ -301,7 +301,7 @@ async function sendLive(text) {
     const r = cid ? await fetch(API + '/api/cases/' + cid + '/reply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), signal: ctl.signal })
       : await fetch(API + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ctx: liveCtx(ch.c), messages: L.hist }), signal: ctl.signal });
     clearTimeout(to); if (!r.ok) throw new Error('http ' + r.status);
-    const j = await r.json(); if (ch.dead || ch.outcome) return;
+    const j = await r.json(); if (ch.dead || ch.outcome || ch.human) { if (L) L.pending = false; return; }
     L.hist.push({ role: 'assistant', content: j.reply }); ch.msgs.push({ f: 'bot', h: esc(j.reply) });
     for (const k in j.signals) if (j.signals[k]) L.signals[k] = true;
     Object.assign(L, { state: j.member_state, note: j.handoff_note, guarded: j.guarded, provider: j.provider, pending: false });
@@ -378,19 +378,19 @@ function phoneHTML() {
     return { html: `<div class="lock"><p class="ldate">Saturday, October 17</p><div class="time" style="text-align:center">9:41</div><p class="lwho">${c.ato ? 'Sarah\'s phone (number on file before today)' : 'Your phone'}</p>
       <div class="notif"><div class="nmark" aria-hidden="true">⚓</div><div style="flex:1;min-width:0"><div class="nhead"><b>Harbor${c.ato ? ' · SMS to the old number' : ''}</b><span>now</span></div><div class="nt">${esc(title)}</div><div class="nb">${esc(text)}</div>
       <div class="small" style="margin-top:6px">Link opens only the authenticated Sound app. Harbor never asks for credentials or codes.</div>
-      <button class="btn sm" style="margin-top:8px" data-act="open">Open Sound app</button></div></div>
+      </div></div><div class="lockact"><button class="btn block" data-act="open">Open Sound app</button></div>
       <p class="lnote">Sound will never ask for your password or a code, or ask you to move money.</p></div>` };
   }
   // chat
   const ch = S.chat, n = ch.outcome ? null : node(ch.cur, ch.c), o = ch.outcome && OUTCOMES[ch.outcome], L = ch.live;
   const busy = ch.typing || ch.queue.length > 0 || !!(L && L.pending);
-  const msgs = ch.msgs.map((m) => { const cls = m.seen ? '' : ' fresh'; m.seen = true; return `<div class="msg ${m.f}${cls}">${m.h}</div>`; }).join('')
+  const msgs = ch.msgs.map((m) => { const cls = m.seen ? '' : ' fresh'; m.seen = true; return m.f === 'emp' ? `<div class="msg bot emp${cls}"><span class="who">Sound team member</span>${m.h}</div>` : `<div class="msg ${m.f}${cls}">${m.h}</div>`; }).join('')
     + (ch.typing || (L && L.pending) ? '<div class="msg bot typing" role="status" aria-label="Harbor is typing"><span></span><span></span><span></span></div>' : '');
-  const chips = busy ? '' : (L ? liveChips(ch) : n ? n.choices : []).map((x, i) => `<button class="choice" data-act="choose" data-i="${i}">${esc(x.t)}</button>`).join('');
-  const box = L && !L.trusted ? `<form class="livebox" data-act="liveform"><textarea id="livein" rows="2" maxlength="600" placeholder="Type what's going on, in your own words" aria-label="Message to Harbor" ${busy ? 'disabled' : ''}>${esc(S.voice.draft || '')}</textarea><button class="btn sm" type="submit" ${busy ? 'disabled' : ''}>Send</button></form>` : '';
-  const footKey = [ch.cur, ch.msgs.length, ch.outcome || '', busy ? 'b' : 'r', L ? L.hist.length : ''].join('|');
+  const chips = busy || ch.human ? '' : (L ? liveChips(ch) : n ? n.choices : []).map((x, i) => `<button class="choice" data-act="choose" data-i="${i}">${esc(x.t)}</button>`).join('');
+  const box = ch.human || (L && !L.trusted) ? `<form class="livebox" data-act="liveform"><textarea id="livein" rows="2" maxlength="600" placeholder="Or type here" aria-label="${ch.human ? 'Message to the Sound team member' : 'Message to Harbor'}" ${busy ? 'disabled' : ''}>${esc(S.voice.draft || '')}</textarea><button class="btn sm" type="submit" ${busy ? 'disabled' : ''}>Send</button></form>` : '';
+  const footKey = [ch.cur, ch.human ? 'h' : '', ch.msgs.length, ch.outcome || '', busy ? 'b' : 'r', L ? L.hist.length : ''].join('|');
   const footCls = ch.footKey === footKey ? '' : ' fresh'; ch.footKey = footKey;
-  const foot = o ? `<button class="btn alt block" data-act="reset">Replay this scenario</button>` : micHTML(busy) + box + chips + `<button class="btn ghost sm" data-act="person">Talk to a person</button>`;
+  const foot = o ? `<button class="btn alt block" data-act="reset">Replay this scenario</button>` : micHTML(busy) + box + chips + (ch.human ? '' : `<button class="btn ghost sm" data-act="person">Talk to a person</button>`);
   const oc = o ? `<div class="outcome ${o.tone}${ch.outcomeSeen ? '' : ' fresh'}"><b>${o.title}</b><br>${o.text}</div>` : ''; if (o) ch.outcomeSeen = true;
   return { html: `${bar('Harbor · security analyst')}<div class="body" id="chatbody">${msgs}${oc}</div><div class="foot${footCls}">${foot}</div>` };
 }
@@ -455,7 +455,7 @@ function onSpoken(text) {
   if (/\b(talk to (a |an |some)?(person|human|someone|employee)|speak (to|with) (a |an |some)?(person|human|someone|employee)|real person|a human|call me)\b/i.test(text)) {
     ch.msgs.push({ f: 'me', h: 'Talk to a person' }); ch.answers.push({ q: 'person', a: 'Talk to a person' }); finish('human'); return render();
   }
-  if (ch.live) {                                                                  // Live AI: put the words in the box to check, then Send
+  if (ch.live || ch.human) {                                                      // Live AI or a person in the chat: put the words in the box to check, then Send
     S.voice.draft = text; S.voice.err = null; render();
     setTimeout(() => { const ta = document.getElementById('livein'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } }, 0);
     return;
@@ -545,12 +545,9 @@ function logHTML() {
     <p class="small"><a class="navlink2" href="inspector.html#kind=chat" target="_blank" rel="noopener">Open the full inspector ↗</a></p>`;
 }
 
-function memberHTML() {
-  const sc = SCENARIOS.find((s) => s.id === S.sc), dec = scenarioDecision(sc), m = mem[sc.mid], c = ctxOf(sc, dec);
+function configPopHTML() {
+  const sc = SCENARIOS.find((s) => s.id === S.sc);
   const list = SCENARIOS.map((s) => `<button class="scn" data-act="scn" data-id="${s.id}" aria-pressed="${s.id === S.sc}"><b>${s.name === s.mid ? s.mid : s.name + ' · ' + s.mid}</b><span class="chip ${s.tag.startsWith('Look') ? 'green' : 'red'}">${s.tag}</span><br><span>${s.blurb}</span></button>`).join('');
-  const rules = dec.rules.length ? dec.rules.map((r) => `<div class="why"><b>${esc(r.label)}</b><br>${esc(r.reason)}</div>`).join('') : `<div class="why" style="border-color:var(--green);background:var(--green-soft)">${noFlagExplain(sc.mid, dec)}</div>`;
-  const sup = dec.suppress.length ? dec.suppress.map((s) => `<div class="why" style="border-color:var(--green);background:var(--green-soft)"><b>Why this is probably you:</b> ${esc(s)}</div>`).join('') : '';
-  const ph = phoneHTML();
   const demoBody = `<div class="pop-col">
       <h3 style="margin-top:0">Pick a story</h3><p class="muted small" style="margin:0 0 10px">Anchor personas and legitimate look-alikes from the synthetic data.</p><div class="story-grid">${list}</div></div>
       <div class="pop-col">
@@ -565,11 +562,22 @@ function memberHTML() {
         ${S.chat && !S.chat.outcome && S.phone.step === 'chat' ? '<button class="btn alt sm" data-act="timeout">Simulate no response (10 min)</button>' : ''}
         ${sc.id === 'closing' ? `<label class="small"><input type="checkbox" data-act="planned" ${S.planned ? 'checked' : ''}> Member declared a Planned Big Payment in advance</label>` : ''}
       </div></div>`;
-  return `<div class="grid-member"><section aria-label="Member phone"><div class="demo-wrap"><button type="button" class="demo-btn" data-act="demo" aria-expanded="${S.ui.demoOpen}" aria-haspopup="dialog"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"></path><circle cx="16" cy="7" r="2"></circle><circle cx="8" cy="17" r="2"></circle></svg><b>Demo controls</b><span class="chip grey">${esc(sc.name)}</span><span class="chip ${S.live.mode === 'live' ? 'green' : 'grey'}">${S.live.mode === 'live' ? 'Live AI' : 'Guided'}</span><svg class="chev ${S.ui.demoOpen ? 'open' : ''}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>${S.ui.demoOpen ? `<div class="pop-backdrop"><div class="pop" role="dialog" aria-modal="true" aria-label="Demo controls"><div class="pop-h"><b>Demo controls</b><span class="chip grey">${esc(sc.name)}</span><span class="chip ${S.live.mode === 'live' ? 'green' : 'grey'}">${S.live.mode === 'live' ? 'Live AI' : 'Guided'}</span><button type="button" class="pop-x" data-act="demo" aria-label="Close demo controls">Close ×</button></div><div class="pop-b">${demoBody}</div></div></div>` : ''}</div><div class="phone${S.textSize === 'xl' ? ' xl' : ''}${S.phone.step === 'chat' ? ' is-chat' : S.phone.step === 'lock' ? ' is-lock' : ''}">${ph.html}</div></section>
+  if (!S.ui.demoOpen) return '';
+  return `<div class="pop-backdrop"><div class="pop" role="dialog" aria-modal="true" aria-label="Config"><div class="pop-h"><b>Config</b><span class="chip grey">${esc(sc.name)}</span><span class="chip ${S.live.mode === 'live' ? 'green' : 'grey'}">${S.live.mode === 'live' ? 'Live AI' : 'Guided'}</span><button type="button" class="pop-x" data-act="demo" aria-label="Close config">Close ×</button></div><div class="pop-b">${demoBody}</div></div></div>`;
+}
+function memberHTML() {
+  const sc = SCENARIOS.find((s) => s.id === S.sc), dec = scenarioDecision(sc), m = mem[sc.mid], c = ctxOf(sc, dec);
+  const rules = dec.rules.length ? dec.rules.map((r) => `<div class="why"><b>${esc(r.label)}</b><br>${esc(r.reason)}</div>`).join('') : `<div class="why" style="border-color:var(--green);background:var(--green-soft)">${noFlagExplain(sc.mid, dec)}</div>`;
+  const sup = dec.suppress.length ? dec.suppress.map((s) => `<div class="why" style="border-color:var(--green);background:var(--green-soft)"><b>Why this is probably you:</b> ${esc(s)}</div>`).join('') : '';
+  const ph = phoneHTML();
+  const rec = R(), be = rec.be, total = D.events[sc.mid].findIndex((e) => e.id === dec.eventId);
+  const seen = { sent: rec.phone.step !== 'review' && rec.phone.step !== 'sending', upto: rec.phone.step !== 'review' ? total + 1 : S.live.backend ? (be.phase === 'idle' ? 0 : be.phase === 'loading' ? Math.min(be.done, total) : total) : total,
+    state: S.live.backend && be.phase === 'loading' ? `<span class="chip warn">Streaming ${be.done}/${be.total || '?'}…</span>` : '' };
+  return `<div class="grid-member"><section aria-label="Member phone"><div class="phone${S.textSize === 'xl' ? ' xl' : ''}${S.phone.step === 'chat' ? ' is-chat' : S.phone.step === 'lock' ? ' is-lock' : ''}">${ph.html}</div></section>
     <section aria-label="What Harbor saw">
       ${coll('saw', esc(sc.name) + ' · ' + esc(sc.tag), `<p class="muted small"><b>Ground truth, hidden from Harbor:</b> ${esc(m.summary)}<br>Outcome in the data: <b>${esc(m.outcome)}</b>${m.loss ? ' · net loss ' + money(m.loss) : ''}</p>
-      <h3>What Harbor saw (event stream)</h3>${timelineHTML(sc.mid, dec, sc.id === 'michael' ? 14 : 9)}
-      <h3>Harbor's decision at payment start ${levelChip(dec.level)}</h3>${rules}${sup}
+      <h3>What Harbor saw (event stream) ${seen.state}</h3>${seen.upto ? timelineHTML(sc.mid, dec, sc.id === 'michael' ? 14 : 9, seen.upto) : '<p class="muted small">No events yet.</p>'}
+      ${seen.sent ? `<h3>Harbor's decision at payment start ${levelChip(dec.level)}</h3>${rules}${sup}` : '<p class="muted small">Harbor decides the moment the payment starts. Press Send payment.</p>'}
       ${S.chat && S.chat.live ? understandingHTML(S.chat.live) : ''}
       ${c.ato ? '<p class="small muted">Takeover path: Harbor texts the number on file <b>before</b> the change, never the attacker\'s session, and never asks for credentials or codes.</p>' : ''}`)}
       ${coll('log', 'Model log for this conversation', logHTML(), logBadge())}
@@ -582,6 +590,55 @@ const COACH = {
   RAMP: ['How did you meet this person? Have you spoken on live video or met in person?', 'Has the amount they ask for been growing?', 'Have you been able to withdraw money from that platform?'],
   GENERAL: ['Who asked you to send this, and how did they contact you?', 'Has anyone told you to keep this secret or stay on the phone?', 'Can you reach the person directly on a number you already had?', 'What would happen if this waited until tomorrow?'],
 };
+const ACTIONS = [
+  { t: 'Call member', log: 'Employee called member on pre-change number', status: 'Employee calling member', cls: '' },
+  { t: 'Release payment', log: 'Payment released by employee after verification', status: 'Released by employee', cls: 'alt' },
+  { t: 'Keep on hold', log: 'Kept on hold by employee', status: 'Kept on hold', cls: 'alt' },
+  { t: 'Trusted contact', log: 'Offered trusted contact (member\'s choice)', status: 'Trusted contact offered', cls: 'alt' },
+  { t: 'Escalate', log: 'Escalated to fraud team; case created', status: 'Escalated to fraud team', cls: 'alt' },
+  { t: 'Start recovery', log: 'Recovery started: wire recall / dispute checklist opened', status: 'Recovery in progress', cls: 'danger' },
+];
+function convoHTML(k) {
+  if (!k) return '<p class="small muted">No conversation yet.</p>';
+  const msgs = (k.msgs || []).length ? k.msgs : openingLines(k).map((t) => ({ f: 'bot', t }));
+  const rec = S.rec[SCENARIOS.find((x) => x.mid === k.mid).id], typing = rec && rec.chat && !rec.chat.outcome && (rec.chat.typing || (rec.chat.live && rec.chat.live.pending));
+  return msgs.map((m) => `<div class="tl-msg ${m.f === 'emp' ? 'bot emp' : m.f}"><span>${m.f === 'me' ? 'Member' : m.f === 'emp' ? 'You' : 'Harbor'}</span>${esc(m.t)}</div>`).join('')
+    + (typing ? '<div class="small muted">Harbor is typing…</div>' : '') + ((k.msgs || []).some((m) => m.f === 'me') ? '' : '<p class="small muted">Member has not replied yet.</p>');
+}
+function composerHTML(k) {
+  const rec = k && Object.values(S.rec).find((r) => r.mid === k.mid), ch = rec && rec.chat;
+  if (!k || !ch) return k ? '<p class="small muted" style="margin:8px 0 0">The member has not opened the chat yet. You can take over once they do.</p>' : '';
+  if (ch.outcome) return '<p class="small muted" style="margin:8px 0 0">This conversation has ended.</p>';
+  if (!ch.human) return '<button class="btn sm block" data-act="takeover" style="margin-top:8px">Take over the chat</button><p class="small muted" style="margin:6px 0 0">Harbor stays in charge until you do. The member will see that a Sound team member joined.</p>';
+  return `<form class="empbox" data-act="empform"><textarea id="empin" rows="2" maxlength="600" placeholder="Write to ${esc(memberName(k.mid))}…" aria-label="Message to the member">${esc(S.ui.empDraft || '')}</textarea>
+    <div class="empbtns"><button class="btn sm" type="submit">Send</button><button type="button" class="btn alt sm" data-act="handback">Hand back to Harbor</button></div></form>`;
+}
+function takeOver(on) {
+  const k = S.cases[S.sel], rec = k && Object.values(S.rec).find((r) => r.mid === k.mid), ch = rec && rec.chat; if (!ch || ch.outcome || ch.human === on) return;
+  ch.human = on; ch.draining = false; ch.typing = false; if (on) { ch.queue = []; if (ch.live) ch.live.pending = false; }
+  ch.msgs.push({ f: 'sys', h: on ? 'A Sound team member has joined this chat.' : 'Harbor is back in the chat.' });
+  const note = on ? 'Took over the chat from Harbor' : 'Handed the chat back to Harbor'; (k.acts ||= []).push(note); k.log.push(note); k.status = on ? 'Employee in the chat' : 'In conversation';
+  const cid = caseId(ch); if (cid) post('/api/cases/' + cid + '/takeover', { on }).catch(() => {});
+  if (!on) { S.ui.empFocus = false; if (ch.queue.length) drain(ch); }
+}
+function employeeSay(text) {
+  const k = S.cases[S.sel], rec = k && Object.values(S.rec).find((r) => r.mid === k.mid), ch = rec && rec.chat; text = (text || '').trim().slice(0, 600);
+  if (!ch || !ch.human || ch.outcome || !text) return;
+  ch.msgs.push({ f: 'emp', h: esc(text) }); S.ui.empDraft = ''; mirror('out', text, true, ch, 'employee'); render();
+}
+function memberToHuman(text) {
+  const ch = S.chat; text = (text || '').trim().slice(0, 600); if (!ch || !ch.human || !text) return;
+  S.voice.draft = ''; ch.msgs.push({ f: 'me', h: esc(text) }); ch.answers.push({ q: 'to-employee', a: text }); mirror('in', text, true, ch); render();
+}
+function actionsAside(k) {
+  const [nt, nb] = k ? nextStep(k) : ['', ''];
+  return `<aside class="cside" aria-label="Actions"><section class="card acts"><h2>Actions</h2>
+    ${k ? `<div class="small" style="margin-bottom:8px"><b>${esc(memberName(k.mid))}</b> · ${esc(money(k.dec.amt))} ${esc(k.dec.rail)} ${statusChip(k)}</div><p class="small" style="margin:2px 0 10px" title="${esc(nb)}"><span class="sum-k">Next step</span> <b>${esc(nt)}</b></p>`
+      : '<p class="small muted" style="margin:0 0 10px">Actions are available when Harbor holds a payment for review.</p>'}
+    <div class="actcol">${ACTIONS.map((a, i) => `<button class="btn ${a.cls} sm" data-act="cact" data-i="${i}" ${k ? '' : 'disabled'}>${esc(a.t)}</button>`).join('')}</div>
+    ${k && k.acts && k.acts.length ? `<div class="sum-k" style="margin-top:12px">Done so far</div><ul class="mini">${k.acts.slice(-3).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</section>
+    <section class="card convo"><h2>Conversation ${k && stageOf(k) === 3 && !k.key ? '<span class="chip green">Live</span>' : ''}</h2><div class="cbody">${convoHTML(k)}</div>${composerHTML(k)}</section></aside>`;
+}
 const ACTOR = { Pipeline: 'grey', 'Rules engine': 'warn', Harbor: 'accent', Member: 'green', You: 'ink' };
 const TRIGGER = { ATO: 'Takeover pattern', RAMP: 'Slow-burn ramp', HIGHSTAKES: 'Large wire or cash', CONTACT: 'Paid right after contacting Sound', FRESH: 'Bigger payment to someone new' };
 const stripHTML = (h) => String(h).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
@@ -610,7 +667,7 @@ function syncOne(rec) {
   if ((p === 'lock' || p === 'chat') && stageOf(k) < 2) { k.stage = 'notified'; k.log.push(`Check-in sent (${ctxOf(sc, dec).ato ? 'SMS to the phone on file before the change' : 'app notification'})`); }
   if (p === 'chat' && ch) {
     if (stageOf(k) < 3) { k.stage = 'chat'; k.log.push('Member opened the chat'); }
-    k.status = 'In conversation'; k.msgs = ch.msgs.filter((m) => m.f === 'bot' || m.f === 'me').map((m) => ({ f: m.f, t: stripHTML(m.h) })); k.answers = ch.answers.slice();
+    if (!k.acts || !k.acts.length) k.status = 'In conversation'; k.msgs = ch.msgs.filter((m) => m.f === 'bot' || m.f === 'me' || m.f === 'emp').map((m) => ({ f: m.f, t: stripHTML(m.h) })); k.answers = ch.answers.slice();
     if (ch.live) { k.live = true; k.signals = Object.keys(ch.live.signals).filter((x) => ch.live.signals[x]); k.note = ch.live.note; k.state = ch.live.state; }
   }
   const v = S.live.backend && rec.be.view; if (v && v.member_id === mid) { k.real = v; const o = v.messages.find((m) => m.direction === 'out'); if (o && stageOf(k) < 3) k.msgs = [{ f: 'bot', t: o.body }]; }
@@ -644,10 +701,10 @@ function stepsFor(k) {
   const d = k.dec, sc = SCENARIOS.find((s) => s.mid === k.mid), c = ctxOf(sc, d), st = stageOf(k), steps = [];
   const evid = keyEvents(k.mid, d.t, 14).filter((e) => isEvidence(e, d));
   steps.push({ a: 'Pipeline', t: 'Activity reached the pipeline', s: 'done', time: evid[0] ? fmt(evid[0].t) : '', b: evid.length ? `Events stream in as one ordered feed per member. These are the ones that mattered:<ul class="mini">${evid.map((e) => `<li><span class="muted">${fmt(e.t)}</span> ${esc(evLabel(e))}</li>`).join('')}</ul>` : 'Routine activity. Nothing unusual before the payment.' });
-  if (d.armed && d.armedAt) steps.push({ a: 'Rules engine', t: 'Account marked "elevated" (Arm)', s: 'done', time: fmt(d.armedAt), b: 'A password reset followed by a new email or phone number, close together. The member sees nothing yet. The engine just watches for a payment.' });
+  if (d.armed && d.armedAt) steps.push({ a: 'Rules engine', t: 'Account flagged as at risk', s: 'done', time: fmt(d.armedAt), b: 'A password reset followed by a new email or phone number, close together. The member sees nothing yet. Harbor just watches for the next payment.' });
   const fired = d.trace ? d.trace.filter((r) => r.fired) : [];
   const checks = fired.map((r) => `<div class="chk"><b>${esc(TRIGGER[r.id] || r.id)}</b>${r.checks.map((x) => `<span class="${x.pass ? 'ok' : 'no'}"><span aria-hidden="true">${x.pass ? '✔' : '✖'}</span> ${esc(x.label)} <i>${esc(String(x.value))}</i></span>`).join('')}</div>`).join('');
-  steps.push({ a: 'Rules engine', t: 'Payment started, rules checked (Decide)', s: 'done', time: fmt(d.t), b: `${money(d.amt)} ${esc(railWord(d.rail))}${d.rs === 'New' ? ' to a new recipient' : ''}. ${d.rules.length === 1 ? 'One rule' : d.rules.length + ' rules'} matched, so the result is <b>${d.level === 'hold' ? 'pause the payment' : 'a light check'}</b>.${checks}${d.suppress.length ? `<div class="small">Look-alike check: ${d.suppress.map(esc).join(' ')}</div>` : ''}` });
+  steps.push({ a: 'Rules engine', t: 'Payment started, rules checked', s: 'done', time: fmt(d.t), b: `${money(d.amt)} ${esc(railWord(d.rail))}${d.rs === 'New' ? ' to a new recipient' : ''}. ${d.rules.length === 1 ? 'One rule' : d.rules.length + ' rules'} matched, so the result is <b>${d.level === 'hold' ? 'pause the payment' : 'a light check'}</b>.${checks}${d.suppress.length ? `<div class="small">Look-alike check: ${d.suppress.map(esc).join(' ')}</div>` : ''}` });
   const rl = k.real, tm = rl && rl.timings;
   steps.push({ a: 'Pipeline', t: 'Payment held and an alert raised', s: 'done', time: tm && tm.alerted ? new Date(tm.alerted).toLocaleTimeString() : '', b: (rl ? `<div class="small"><b>Real run:</b> rules decided in ${tm.decide_ms} ms · alert <code>${esc(rl.alert ? rl.alert.alert_id : '')}</code> saved to Postgres and published to Kafka.</div>` : '') + 'The payment stays pending instead of completing, which buys a window of minutes. The alert is saved, then published for the agent. Each member gets one case, so a second alert joins this one instead of sending another message.' });
   if (rl && rl.note) steps.push({ a: 'Pipeline', t: 'AI tagger added a note (advisory)', s: 'done', b: `<span class="chip ${rl.note.risk === 'high' ? 'red' : rl.note.risk === 'medium' ? 'warn' : 'grey'}">${esc(rl.note.tag)}</span> risk ${esc(rl.note.risk)}: ${esc(rl.note.note)}<div class="small muted">${esc(rl.note.source === 'llm' ? rl.note.model : 'rule tag')} · ${rl.note.latency_ms == null ? '' : rl.note.latency_ms + ' ms · '}advisory only: it never messages a member on its own.</div>` });
@@ -707,37 +764,28 @@ function consoleHTML() {
     </div></section>`;
   if (!k) {
     const dec = scenarioDecision(sc);
-    return `<div class="console2">${queue}<section class="card"><h2>${esc(sc.name)} · ${esc(sc.tag)} <span class="chip grey">${esc(sc.mid)}</span></h2>
-      ${notSent ? `<p><span class="chip grey">Not sent yet</span> The payment in this story has not been sent. Pick this story in the Member app's Demo controls and press <b>Send payment</b>: Harbor evaluates it and the held payment appears here, filling in as the demo goes.</p>` : ''}${notSent ? '' : `<p><span class="chip green">No case</span> ${dec.level === 'none' ? 'Harbor let this payment through, so there is nothing for staff to review.' : 'Harbor asked a light question and released the payment, so no case was opened.'}</p>
-      ${dec.level === 'none' ? `<p class="small muted">${noFlagExplain(sc.mid, dec)}</p>` : ''}<p class="small muted">That is the point for this story: a legitimate member goes through without a hold or a phone call.</p>`}</section></div>`;
+    return `<div class="console2">${queue}<div class="cgrid"><div class="cmain"><section class="card"><h2>${esc(sc.name)} · ${esc(sc.tag)} <span class="chip grey">${esc(sc.mid)}</span></h2>
+      ${notSent ? `<p><span class="chip grey">Not sent yet</span> The payment in this story has not been sent. Pick this story in Config and press <b>Send payment</b>: Harbor evaluates it and the held payment appears here, filling in as the demo goes.</p>` : ''}${notSent ? '' : `<p><span class="chip green">No case</span> ${dec.level === 'none' ? 'Harbor let this payment through, so there is nothing for staff to review.' : 'Harbor asked a light question and released the payment, so no case was opened.'}</p>
+      ${dec.level === 'none' ? `<p class="small muted">${noFlagExplain(sc.mid, dec)}</p>` : ''}<p class="small muted">That is the point for this story: a legitimate member goes through without a hold or a phone call.</p>`}</section><section class="card"><h2>Live events</h2>${liveFeed(sc)}</section></div>${actionsAside(null)}</div></div>`;
   }
   S.sel = selId;
   const d = k.dec, isRamp = d.rules.some((r) => r.id === 'RAMP'), isAto = d.rules.some((r) => r.id === 'ATO');
   const coach = (isAto ? COACH.ATO : isRamp ? COACH.RAMP : COACH.GENERAL).map((q) => `<li>${esc(q)}</li>`).join('');
   const risk = d.rules.some((r) => ['ATO', 'RAMP', 'HIGHSTAKES', 'CONTACT'].includes(r.id)) ? ['High risk', 'red'] : ['Medium risk', 'warn'];
-  const transcript = (k.msgs || []).length ? k.msgs.map((m) => `<div class="tl-msg ${m.f}"><span>${m.f === 'me' ? 'Member' : 'Harbor'}</span>${esc(m.t)}</div>`).join('') : openingLines(k).map((t) => `<div class="tl-msg bot"><span>Harbor</span>${esc(t)}</div>`).join('') + '<p class="small muted">Member has not replied yet.</p>';
-  return `<div class="console2">${queue}
+  return `<div class="console2">${queue}<div class="cgrid"><div class="cmain">
     <section class="card op"><div class="op-h"><h2>${esc(memberName(k.mid))} · ${esc(k.tag)} <span class="chip grey">${esc(k.mid)}</span></h2>${chipFor(k)}</div>
       <div class="sum"><div class="sum-k">What this is about</div><p class="sum-h">${esc(headline(k))}</p>
         <div class="sum-chips"><span class="chip ${risk[1]}">${risk[0]}</span>${d.rules.map((r) => `<span class="chip grey">${esc(TRIGGER[r.id] || r.id)}</span>`).join('')}<span class="chip grey">${isAto ? 'SMS to the old phone' : 'App notification'}</span></div>
         <div class="sum-k" style="margin-top:12px">Conversation so far</div><p class="sum-p">${esc(convoSummary(k))}</p><p class="small" style="margin:6px 0 0"><b>Status:</b> ${esc(stateLine(k))}</p></div>
+      <h3>Live events</h3>${liveFeed(sc)}
       <h3>Transaction</h3>${txnHTML(k)}
       <h3>What happened, step by step</h3>
       <ol class="steps">${stepsFor(k).map((s, i) => `<li class="step ${s.s}"><span class="dot" aria-hidden="true">${s.s === 'done' ? '✓' : s.s === 'wait' ? '…' : i + 1}</span><div class="sb"><div class="sh"><b>${esc(s.t)}</b><span class="chip ${ACTOR[s.a]}">${s.a}</span>${s.time ? `<span class="muted small">${esc(s.time)}</span>` : ''}</div><div class="sbody">${s.b}</div></div></li>`).join('')}</ol>
-      <h3>Your actions</h3>
-      <div class="actions">
-        <button class="btn sm" data-act="cact" data-v="Employee called member on pre-change number">Call member (pre-change number)</button>
-        <button class="btn alt sm" data-act="cact" data-v="Payment released by employee after verification">Release payment</button>
-        <button class="btn alt sm" data-act="cact" data-v="Kept on hold by employee">Keep on hold</button>
-        <button class="btn alt sm" data-act="cact" data-v="Offered trusted contact (member's choice)">Offer trusted contact</button>
-        <button class="btn alt sm" data-act="cact" data-v="Escalated to fraud team; case created">Escalate to fraud team</button>
-        <button class="btn danger sm" data-act="cact" data-v="Recovery started: wire recall / dispute checklist opened">Start recovery</button></div>
       <div class="discs">
-        ${disc('tx', 'Full conversation', transcript)}
         ${disc('ev', 'Evidence timeline', timelineHTML(k.mid, d, 8))}
         ${disc('coach', 'Conversation coach: open questions, no blame', `<ul class="coach">${coach}</ul><p class="small muted">Say: "I'm checking because it's your money." Avoid: "suspicious", "you've been scammed".</p>`)}
         ${disc('log', 'Case log', `<div class="log">${k.log.map((l) => '• ' + esc(l)).join('<br>')}</div>`)}
-      </div></section></div>`;
+      </div></section></div>${actionsAside(k)}</div></div>`;
 }
 
 /* ---------- simulator ---------- */
@@ -792,94 +840,39 @@ function svgBox(x, y, w, h, cls, title, lines) {
     lines.map((l, i) => `<text class="dg-s" x="${x + 14}" y="${y + 50 + i * 19}">${esc(l)}</text>`).join('') + '</g>';
 }
 function arrow(d) { return `<path class="dg-arrow" d="${d}" marker-end="url(#ah)"/>`; }
-function pipelineSVG() {
-  const c = S.sim.cfg;
-  const rules = [
-    ['ATO', `reset ≤${c.atoWindowMin} min ago + email AND phone changed + new recipient`, 'PAUSE', 'red'],
-    ['RAMP', `≥${c.rampMinPriorP2P} P2P to new people, then wire/transfer to a new recipient`, 'PAUSE', 'red'],
-    ['HIGHSTAKES', `wire or cash ≥${c.highStakesRatio}× usual amount, new recipient (or cash)`, 'PAUSE', 'red'],
-    ['CONTACT', 'branch visit / call ≤90 min before a large non-P2P payment', 'PAUSE', 'red'],
-    ['FRESH', `P2P to a new person ≥${c.freshRecipientRatio}× usual amount`, 'LIGHT CHECK', 'amber'],
-  ];
-  const rows = rules.map((r, i) => `<text class="dg-t" x="40" y="${272 + i * 26}">${r[0]}</text><text class="dg-s" x="140" y="${272 + i * 26}">${esc(r[1])}</text><text class="dg-t ${r[3]}" x="572" y="${272 + i * 26}">${r[2]}</text>`).join('');
-  return `<svg viewBox="0 0 1180 580" role="img" aria-label="How a Harbor trigger fires: event stream, member state, arm, decide, rule bank, look-alike check, level, check-in, human" class="dg">
-  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" class="dg-head"/></marker></defs>
-  ${svgBox(20, 30, 210, 140, '', '1  Event stream', ['Login · password reset', 'Email / phone / address change', 'Recipient added', 'Payment initiated', 'Branch visit · call center'])}
-  ${arrow('M230 100H262')}
-  ${svgBox(262, 30, 220, 140, '', '2  Member state (rolling)', ['last password reset', 'email / phone changed?', 'age of each recipient', 'payments to new people', 'last contact with Sound'])}
-  ${arrow('M482 100H514')}
-  ${svgBox(514, 30, 250, 140, 'dg-arm', '3  ARM  (silent)', ['reset + email or phone change', 'within 24 hours', '→ account marked "elevated"', 'nothing shown to the member'])}
-  ${arrow('M764 100H796')}
-  ${svgBox(796, 30, 364, 140, 'dg-decide', '4  DECIDE  (the trigger moment)', ['Runs only when an OUTGOING payment starts', '(event: Payment Initiated).', 'The payment is still Pending: that is our', 'window to act (1 to 14 minutes in the data).'])}
-  ${arrow('M978 170V196H355V218')}
-  <g><rect class="dg-box" x="20" y="218" width="670" height="168" rx="12"/><text class="dg-t" x="34" y="244">Rule bank: a trigger = at least one rule matches</text>${rows}</g>
-  <g><rect class="dg-box" x="710" y="218" width="450" height="168" rx="12"/><text class="dg-t" x="724" y="244">What does NOT start a trigger</text>
-    ${['Logins, deposits, card purchases, ATM withdrawals', 'Bill pay or auto-pay to existing payees', 'Usual-size payments to existing recipients', 'A password reset or an address change on its own', 'Any single signal. A trigger needs a rule to match.'].map((l, i) => `<text class="dg-s" x="724" y="${272 + i * 22}">• ${esc(l)}</text>`).join('')}</g>
-  ${arrow('M165 386V430')}
-  ${svgBox(20, 430, 290, 126, 'dg-ok', '5  Look-alike check', ['address-only change, long gap = real move', 'Planned Big Payment declared in advance', '→ lowers PAUSE to LIGHT CHECK', '(a takeover pattern is never suppressed)'])}
-  ${arrow('M310 493H342')}
-  ${svgBox(342, 430, 260, 126, '', '6  Level', ['none → payment goes through', 'light check → 1-2 questions', 'pause & ask → held, Harbor reaches', 'the member'])}
-  ${arrow('M602 493H634')}
-  ${svgBox(634, 430, 270, 126, 'dg-teal', '7  Harbor check-in', ['out-of-band: pre-change phone for', 'takeover, authenticated app otherwise.', 'Chat gathers context, member decides'])}
-  ${arrow('M904 493H936')}
-  ${svgBox(936, 430, 224, 126, 'dg-teal', '8  Human, if needed', ['member asks, unclear, or no reply', 'in 10 min → employee outreach', 'with the chat summary'])}
-  </svg>`;
+/* ---------- live triggers: what each event does as it moves through the pipeline, following the demo ---------- */
+const ARM_NOTE = 'Account flagged as at risk. The member sees nothing yet.';
+function feedFor(sc, upto) {
+  const evs = D.events[sc.mid], cfg = { planned: S.planned ? PLANS[sc.mid] : undefined }, st = E.createState(), out = [];
+  for (const e of evs.slice(0, upto)) {
+    const was = st.armedAt, d = E.step(st, e, cfg), armedNow = was === null && st.armedAt !== null;
+    if (!KEY.includes(e.type) || (e.type === 'Payment Initiated' && e.dir !== 'Outgoing')) continue;
+    const note = { 'Password Reset': 'Noted. A reset on its own does nothing.', 'Email Change': 'Noted: contact details changed.', 'Phone Change': 'Noted: contact details changed.', 'Address Change': 'Noted. An address change alone is a weak signal.',
+      'Recipient Added': 'New recipient on file. Counts as "new" for 30 days.', 'Branch Visit': 'Contact with Sound noted. A large payment soon after would matter.', 'Contact Center Call': 'Contact with Sound noted. A large payment soon after would matter.',
+      'Profile Change Alert Sent': 'The member was told about the change.' }[e.type];
+    if (d) out.push({ e, cls: d.level === 'none' ? '' : 'hit', note: d.level === 'none' ? 'Checked all 5 rules: none matched. Let through.' : 'Rules matched: ' + d.rules.map((r) => TRIGGER[r.id] || r.id).join(', ') + '.' });
+    else out.push({ e, cls: armedNow ? 'hit' : '', note: armedNow ? ARM_NOTE : note || '' });
+  }
+  return out;
 }
-function ruleTable() {
-  const c = S.sim.cfg;
-  const R = [
-    ['ATO', 'Takeover pattern', 'password_reset_recent, email/phone change events, recipient_status, time since reset', `reset ≤ ${c.atoWindowMin} min before payment; email AND phone changed; recipient new`, 'Pause', 'Sarah M1003', 'Address-only change with a gap over ' + c.realMoverGapHours + ' h (M1039, M1041)'],
-    ['RAMP', 'Slow-burn escalation', 'payment_rail, recipient_status, recipient_age_days, history of P2P to new people', `≥ ${c.rampMinPriorP2P} earlier P2P to new/young recipients, then wire or external transfer to a new recipient`, 'Pause', 'Michael M1002', 'Member\'s own new brokerage account (not flagged: no P2P ramp)'],
-    ['HIGHSTAKES', 'Large payment, hard to reverse', 'payment_rail, amount_to_baseline_ratio, recipient_status', `wire or cash; new recipient (or cash); ≥ ${c.highStakesRatio}× usual amount`, 'Pause', 'Linda M1001, James M1004', 'Planned Big Payment (M1057 closing wire)'],
-    ['CONTACT', 'Pay right after contacting Sound', 'Branch Visit / Contact Center Call events, amount_to_baseline_ratio, rail', 'visit or call ≤ 90 min before a large non-P2P payment', 'Pause', 'James M1004', 'Planned Big Payment'],
-    ['FRESH', 'Bigger-than-usual payment to a new person', 'payment_rail = P2P, recipient_status, amount_to_baseline_ratio', `P2P, new recipient, ≥ ${c.freshRecipientRatio}× usual amount`, 'Light check', 'Contractor M1049', 'n/a (already light)'],
-  ];
-  return `<div class="tablewrap"><table><thead><tr><th>Rule</th><th>Signals (data fields)</th><th>Condition (live thresholds)</th><th>Level</th><th>Catches</th><th>Lowered when</th></tr></thead><tbody>` +
-    R.map((r) => `<tr><td><b>${r[0]}</b><br><span class="small muted">${r[1]}</span></td><td class="small">${r[2]}</td><td>${r[3]}</td><td><span class="chip ${r[4] === 'Pause' ? 'red' : 'amber'}">${r[4]}</span></td><td class="small">${r[5]}</td><td class="small">${r[6]}</td></tr>`).join('') + '</tbody></table></div>';
+function decideCard(dec, tm) {
+  const fired = dec.trace.filter((r) => r.fired), missed = dec.trace.filter((r) => !r.fired);
+  const why = (r) => { const f = r.checks.find((c) => !c.pass); return f ? `<span class="small muted">${esc(TRIGGER[r.id] || r.id)}: ${esc(f.label)} <i>(${esc(String(f.value))})</i></span>` : ''; };
+  return `<p><b>${money(dec.amt)} ${esc(railWord(dec.rail))}</b>${dec.rs === 'New' ? ' to a new recipient' : ''} arrived. The rules ran ${tm && tm.decide_ms != null ? `in <b>${tm.decide_ms} ms</b>` : 'instantly'}, no model involved. Result: ${levelChip(dec.level)}</p>
+    ${fired.map((r) => `<div class="chk"><b>${esc(TRIGGER[r.id] || r.id)}</b>${r.checks.map((x) => `<span class="${x.pass ? 'ok' : 'no'}"><span aria-hidden="true">${x.pass ? '✔' : '✖'}</span> ${esc(x.label)} <i>${esc(String(x.value))}</i></span>`).join('')}</div>`).join('')}
+    ${dec.suppress.map((x) => `<div class="why" style="border-color:var(--green);background:var(--green-soft)"><b>Look-alike check lowered it:</b> ${esc(x)}</div>`).join('')}
+    ${fired.length ? '' : `<p class="small muted">${noFlagExplain(dec.mid || '', dec)}</p>`}
+    ${missed.length ? `<div class="small muted" style="margin-top:8px">Did not match:</div><div class="miss">${missed.map(why).join('<br>')}</div>` : ''}`;
 }
-function swimlaneSVG(sc, dec) {
-  const MIN = 60000, mid = sc.mid, evs = D.events[mid];
-  const ruleIds = dec.rules.map((r) => r.id);
-  const keyEv = keyEvents(mid, dec.t, 14);
-  let start;
-  if (dec.armed && dec.resetAt) start = dec.resetAt - 5 * MIN;
-  else if (ruleIds.includes('CONTACT')) start = dec.t - 3 * 3600000;
-  else if (ruleIds.includes('RAMP')) start = keyEv[0].t;
-  else if (dec.resetAt) start = dec.resetAt - 30 * MIN;
-  else start = keyEv[0].t;
-  const span = dec.t - start, end = dec.t + Math.max(span * 0.06, 2 * MIN);
-  const X0 = 170, X1 = 1100, x = (t) => X0 + ((t - start) / (end - start)) * (X1 - X0);
-  const lanes = ['Password reset', 'Email / phone change', 'Address change', 'Recipient added', 'Contact with Sound', 'Payment started'];
-  const laneOf = (e) => ({ 'Password Reset': 0, 'Email Change': 1, 'Phone Change': 1, 'Address Change': 2, 'Recipient Added': 3, 'Branch Visit': 4, 'Contact Center Call': 4, 'Payment Initiated': 5 }[e.type]);
-  const Y = (i) => 50 + i * 46;
-  const shown = evs.filter((e) => e.t >= start && e.t <= dec.t && laneOf(e) !== undefined && !(e.type === 'Payment Initiated' && e.dir !== 'Outgoing'));
-  const grid = lanes.map((l, i) => `<line class="dg-grid" x1="${X0 - 10}" x2="${X1 + 20}" y1="${Y(i)}" y2="${Y(i)}"/><text class="dg-s" x="10" y="${Y(i) + 4}">${l}</text>`).join('');
-  const ticks = [0, 1, 2, 3, 4, 5].map((k) => { const t = start + (k / 5) * (end - start); return `<text class="dg-s" x="${x(t)}" y="${Y(5) + 70}" text-anchor="middle">${fmt(t)}</text>`; }).join('');
-  const dots = shown.map((e) => { const last = e.id === dec.eventId, lane = laneOf(e);
-    const lbl = e.type === 'Email Change' ? 'email' : e.type === 'Phone Change' ? 'phone' : e.type === 'Payment Initiated' ? money(e.amt) : e.type === 'Branch Visit' ? 'branch' : e.type === 'Contact Center Call' ? 'call' : '';
-    return `<circle class="dg-dot ${last ? 'last' : lane === 5 ? 'pay' : ''}" cx="${x(e.t)}" cy="${Y(lane)}" r="${last ? 9 : 7}"><title>${esc(evLabel(e))} · ${fmt(e.t)}</title></circle>${lbl ? `<text class="dg-s dg-lbl" x="${x(e.t)}" y="${Y(lane) - 13}" text-anchor="middle">${esc(lbl)}</text>` : ''}`; }).join('');
-  const arm = dec.armedAt && dec.armedAt >= start && dec.armedAt <= dec.t ? `<line class="dg-arm-line" x1="${x(dec.armedAt)}" x2="${x(dec.armedAt)}" y1="26" y2="${Y(5) + 22}"/><text class="dg-t amber" x="${x(dec.armedAt)}" y="20" text-anchor="middle">ARM</text>` : '';
-  const brk = dec.armed && dec.resetAt ? `<path class="dg-brk" d="M${x(dec.resetAt)} ${Y(5) + 30}V${Y(5) + 38}H${x(dec.t)}V${Y(5) + 30}"/><text class="dg-t" x="${(x(dec.resetAt) + x(dec.t)) / 2}" y="${Y(5) + 54}" text-anchor="middle" font-size="12.5">${Math.round((dec.t - dec.resetAt) / MIN)} min from reset to payment</text>` : '';
-  return `<svg viewBox="0 0 1180 ${Y(5) + 84}" class="dg" role="img" aria-label="Timeline of events for ${esc(sc.name)} leading to the decide moment">${grid}${arm}<line class="dg-decide-line" x1="${x(dec.t)}" x2="${x(dec.t)}" y1="26" y2="${Y(5) + 22}"/><text class="dg-t red" x="${x(dec.t)}" y="20" text-anchor="middle">DECIDE</text>${dots}${brk}${ticks}</svg>`;
-}
-function checksHTML(dec) {
-  return dec.trace.map((r) => `<div class="card" style="box-shadow:none;margin-bottom:8px;border-color:${r.fired ? 'var(--red)' : 'var(--line)'}"><b>${r.id}</b> ${r.fired ? '<span class="chip red">FIRED</span>' : '<span class="chip grey">did not fire</span>'}
-    <ul class="checks">${r.checks.map((k) => `<li class="${k.pass ? 'ok' : 'no'}"><span aria-hidden="true">${k.pass ? '✔' : '✖'}</span> ${esc(k.label)} <span class="muted">· ${esc(String(k.value))}</span></li>`).join('')}</ul></div>`).join('');
-}
-function triggerHTML() {
-  const sc = SCENARIOS.find((s) => s.id === S.trig.id) || SCENARIOS[0], dec = scenarioDecision(sc);
-  const opts = SCENARIOS.map((s) => `<option value="${s.id}" ${s.id === sc.id ? 'selected' : ''}>${esc(s.name)} · ${esc(s.tag)}</option>`).join('');
-  const sup = dec.suppress.length ? dec.suppress.map((x) => `<div class="why" style="border-color:var(--green);background:var(--green-soft)"><b>Look-alike check lowered it:</b> ${esc(x)}</div>`).join('') : '';
-  return `<div class="card"><h2>How a trigger starts</h2>
-    <p class="muted">A trigger is not a score and not a single signal. Events build up a silent picture of the account (<b>Arm</b>), and the moment an outgoing payment starts (<b>Decide</b>) one or more named rules either match or don't. A match gives a level; the level decides how much friction the member sees.</p>
-    ${pipelineSVG()}</div>
-  <div class="card" style="margin-top:16px"><h2>What defines each trigger</h2><p class="muted small">Thresholds update live from the Simulator sliders. All inputs are fields in the challenge data dictionary.</p>${ruleTable()}</div>
-  <div class="card" style="margin-top:16px"><h2>Watch a trigger form</h2>
-    <p class="muted small">Pick a story. Dots are the real events from the synthetic data; the red line is the moment Harbor decides.</p>
-    <label class="small">Story <select data-act="trigmember">${opts}</select></label> ${levelChip(dec.level)}
-    ${swimlaneSVG(sc, dec)}
-    <h3>The checks run at the Decide moment</h3>${checksHTML(dec)}${sup}
-    <p class="small muted">${dec.level === 'none' ? noFlagExplain(sc.mid, dec) : ''}</p></div>`;
+function liveFeed(sc) {
+  const rec = S.rec[sc.id], be = rec ? rec.be : { phase: 'idle', done: 0, total: 0 }, dec = scenarioDecision(sc), total = D.events[sc.mid].findIndex((e) => e.id === dec.eventId), p = rec ? rec.phone.step : 'review';
+  const decided = rec && p !== 'review' && p !== 'sending';
+  const upto = !rec ? 0 : decided ? total + 1 : p === 'sending' ? total : S.live.backend ? (be.phase === 'idle' ? 0 : be.phase === 'loading' ? Math.min(be.done, total) : total) : total;
+  const feed = feedFor(sc, upto).slice(-10);
+  const li = (f) => `<li class="${f.cls}"><time>${fmt(f.e.t)}</time><span>${esc(evLabel(f.e))}${f.note ? `<br><span class="small ${f.cls ? '' : 'muted'}">${esc(f.note)}</span>` : ''}</span></li>`;
+  const state = S.live.backend && be.phase === 'loading' ? `<span class="chip warn">Streaming ${be.done}/${be.total || '?'} events…</span> ` : '';
+  return `${state}${feed.length ? `<ul class="tl">${feed.map(li).join('')}</ul>` : `<p class="muted small">${rec ? 'No events yet.' : 'This story has not been started. Pick it in Config to stream its events.'}</p>`}
+    ${p === 'sending' ? '<p class="small"><span class="chip warn">Rules running…</span> The payment just arrived.</p>' : decided ? '' : upto >= total && rec ? '<p class="small"><span class="chip grey">Waiting</span> The account picture is built. Nothing decides until an outgoing payment starts.</p>' : ''}`;
 }
 
 /* ---------- architecture + live pipeline ---------- */
@@ -895,7 +888,7 @@ function archSVG() {
   ${a('M190 95H230')}
   ${topic(230, 55, 160, 80, 'events.raw', 'key = member_id')}${T(310, 152, '6 partitions, ordered per member', 'dg-s', 'middle')}
   ${a('M390 95H430')}
-  ${box(430, 40, 230, 120, 'dg-decide', 'Scorer  (fast path)', ['rules engine, per-member state', 'Arm then Decide at payment start', 'deterministic, explainable', 'p50 about 1 ms per event'], 'no LLM')}
+  ${box(430, 40, 230, 120, 'dg-decide', 'Scorer  (fast path)', ['rules engine, per-member state', 'flag the account, then check each payment', 'deterministic, explainable', 'p50 about 1 ms per event'], 'no LLM')}
   ${a('M660 112H690V198H710')}${T(700, 106, 'every event', 'dg-s')}
   ${a('M660 62H1000')}${T(830, 54, 'alerts (outbox pattern)', 'dg-s', 'middle')}
   ${a('M545 160V190')}
@@ -985,7 +978,7 @@ function archHTML() {
 /* ---------- notes ---------- */
 function notesHTML() {
   return `<div class="notes">
-  <div class="card"><h2>Trigger: event-based, two stages</h2><p><b>Arm</b>: password reset, then email/phone change, then recipient added silently marks the account elevated. <b>Decide</b>: at <i>Payment Initiated</i>, rules look at account state, rail, recipient age and the member's baseline. Hold, then Harbor reaches the member. Payments sit in <i>Pending</i> for 1-14 minutes in the data, which is the window.</p>
+  <div class="card"><h2>Trigger: event-based, two stages</h2><p><b>Step 1, flag the account:</b> a password reset, then an email or phone change, quietly marks the account as at risk. The member sees nothing. <b>Step 2, check the payment:</b> when a payment starts, rules look at account state, rail, recipient age and the member's baseline. Hold, then Harbor reaches the member. Payments sit in <i>Pending</i> for 1-14 minutes in the data, which is the window.</p>
   <p class="muted small">Uses only fields in the challenge data. No device, voice, carrier or message-content data. Harbor never claims certainty that something is fraud.</p></div>
   <div class="card"><h2>Wrong-flag path (legitimate member)</h2><p>Every pause explains itself ("Why this is probably you" / "What I noticed"). The member answers plain questions and can reach a person at any time. Look-alike suppression: address-only change with a long gap, Planned Big Payment, own-account transfers. A held look-alike gets a callback with a target under 30 minutes; the data's baseline is 3-4 hours.</p></div>
   <div class="card"><h2>Honest limits: the scam we miss</h2><p>Early small payments in a romance scam (Michael's first P2Ps) look routine. Harbor first acts at the wire escalation. Coached members may say "it's me", so questions are open and scenario-specific, and a human takes over when anything is unclear. A member who insists keeps the final say; Harbor logs it, explains recovery is harder, and checks in the next day.</p></div>
@@ -1002,8 +995,12 @@ function render() {
   syncCase();
   document.querySelectorAll('nav [role=tab]').forEach((b) => b.setAttribute('aria-selected', b.dataset.tab === S.tab));
   const bd = $('#badge'); bd.hidden = !S.unread; bd.textContent = S.unread;
-  $('#view').innerHTML = { member: memberHTML, console: consoleHTML, trigger: triggerHTML, sim: simHTML, arch: archHTML, pipe: pipeHTML, notes: notesHTML }[S.tab]();
+  $('#view').innerHTML = { member: memberHTML, console: consoleHTML, sim: simHTML, arch: archHTML, pipe: pipeHTML, notes: notesHTML }[S.tab]();
   const cb = $('#chatbody'); if (cb) cb.scrollTop = cb.scrollHeight;
+  { const ei = document.getElementById('empin'); if (ei && S.ui.empFocus && document.activeElement !== ei) { ei.focus(); ei.setSelectionRange(ei.value.length, ei.value.length); } }
+  const cv = document.querySelector('.convo .cbody'); if (cv) cv.scrollTop = cv.scrollHeight;
+  const cb2 = $('#cfgBtn'); if (cb2) { cb2.setAttribute('aria-expanded', !!S.ui.demoOpen); $('#cfgInfo').textContent = SCENARIOS.find((x) => x.id === S.sc).name + ' · ' + (S.live.mode === 'live' ? 'Live AI' : 'Guided'); }
+  const cp = $('#cfgpop'); if (cp) cp.innerHTML = configPopHTML();
   document.body.classList.toggle('modal-open', !!S.ui.demoOpen);
   if (S.ui.qOpen && S.tab === 'console') { const qi = document.getElementById('qsearch'); if (qi && document.activeElement !== qi) { qi.focus(); qi.setSelectionRange(qi.value.length, qi.value.length); } }
   if (S.ui.demoOpen && !S.ui.popFocused) { S.ui.popFocused = true; const x = document.querySelector('.pop-x'); if (x) x.focus(); }
@@ -1017,7 +1014,7 @@ function resetStory(id = S.sc) {                                           // on
 function showStory(id) { stopVoice(); S.voice.draft = ''; S.sc = id; S.sel = SCENARIOS.find((x) => x.id === id).mid; S.log.rows = []; if (S.live.backend && !S.rec[id]) beginStory(R()); }
 function resetAll() { for (const id of Object.keys(S.rec)) resetStory(id); S.cases = {}; S.unread = 0; if (S.live.backend) beginStory(R()); }
 document.addEventListener('click', (ev) => {
-  if (S.ui.demoOpen && !ev.target.closest('.pop, .demo-btn')) { S.ui.demoOpen = false; render(); }
+  if (S.ui.demoOpen && !ev.target.closest('.pop, .cfgbtn')) { S.ui.demoOpen = false; render(); }
   if (S.ui.qOpen && !ev.target.closest('.qfield')) { S.ui.qOpen = false; render(); }
 }, true);
 document.addEventListener('keydown', (ev) => {
@@ -1027,7 +1024,7 @@ document.addEventListener('keydown', (ev) => {
     else if (ev.key === 'ArrowDown') { const f = document.querySelector('#qlist .qitem'); if (f) { ev.preventDefault(); f.focus(); } }
     return;
   }
-  if (ev.key === 'Escape' && S.ui.demoOpen) { S.ui.demoOpen = false; render(); const b = document.querySelector('.demo-btn'); if (b) b.focus(); } });
+  if (ev.key === 'Escape' && S.ui.demoOpen) { S.ui.demoOpen = false; render(); const b = document.querySelector('.cfgbtn'); if (b) b.focus(); } });
 document.addEventListener('click', (ev) => {
   const t = ev.target.closest('[data-act],[data-tab]'); if (!t) return;
   if (t.dataset.tab) { S.tab = t.dataset.tab; if (S.tab === 'console') S.unread = 0; if (S.tab === 'pipe') pipeStart(); return render(); }
@@ -1041,6 +1038,8 @@ document.addEventListener('click', (ev) => {
   else if (a === 'choose') choose(+t.dataset.i);
   else if (a === 'person') { mirror('in', 'Talk to a person', true); S.chat.msgs.push({ f: 'me', h: 'Talk to a person' }); S.chat.answers.push({ q: 'person', a: 'Talk to a person' }); finish('human'); }
   else if (a === 'timeout') finish('timeout');
+  else if (a === 'takeover') takeOver(true);
+  else if (a === 'handback') takeOver(false);
   else if (a === 'mic') { S.voice.on ? stopVoice(true) : startVoice(); return; }
   else if (a === 'demo') S.ui.demoOpen = !S.ui.demoOpen;
   else if (a === 'disc') S.ui.d[t.dataset.k] = !S.ui.d[t.dataset.k];
@@ -1050,7 +1049,7 @@ document.addEventListener('click', (ev) => {
   else if (a === 'rawt') S.ui.raw[t.dataset.id] = !S.ui.raw[t.dataset.id];
   else if (a === 'reset') { S.ui.demoOpen = false; resetStory(); if (S.live.backend) beginStory(R()); }
   else if (a === 'resetall') { S.ui.demoOpen = false; resetAll(); }
-  else if (a === 'cact') { const k = S.cases[S.sel]; { const r = Object.values(S.rec).find((x) => x.mid === S.sel), cid = S.live.backend && r && r.be.view && r.be.view.case && r.be.view.case.case_id; if (cid) post('/api/cases/' + cid + '/action', { text: t.dataset.v }).catch(() => {}); } k.log.push(t.dataset.v); k.status = t.dataset.v.split(';')[0]; k.updated = 'Just now'; }
+  else if (a === 'cact') { const k = S.cases[S.sel], ac = ACTIONS[+t.dataset.i]; if (!k || !ac) return; t.dataset.v = ac.log; (k.acts ||= []).push(ac.log); k.status = ac.status; { const r = Object.values(S.rec).find((x) => x.mid === S.sel), cid = S.live.backend && r && r.be.view && r.be.view.case && r.be.view.case.case_id; if (cid) post('/api/cases/' + cid + '/action', { text: t.dataset.v }).catch(() => {}); } k.log.push(ac.log); k.updated = 'Just now'; }
   else if (a === 'sim') S.sim.selId = t.dataset.id;
   else if (a === 'pcase') { S.pipe.sel = t.dataset.id; pipeFetch(); }
   else if (a === 'preply') { pipeReply(); return; }
@@ -1064,24 +1063,26 @@ document.addEventListener('change', (ev) => {
   else if (a === 'plannedAll') S.sim.plannedAll = t.checked;
   else if (a === 'mode') { S.live.mode = t.value; S.live.chosen = true; }   // applies to the next chat; nothing is reset
   else if (a === 'tsize') { S.textSize = t.value === 'xl' ? 'xl' : 'large'; try { localStorage.setItem('harbor-textsize', S.textSize); } catch (e) { /* storage blocked */ } }
-  else if (a === 'trigmember') S.trig.id = t.value;
   else if (a === 'filter') S.sim.filter = t.value;
   else return;
   render();
 });
 document.addEventListener('input', (ev) => {
   const t = ev.target; if (t.id === 'livein') { S.voice.draft = t.value; return; }
+  if (t.id === 'empin') { S.ui.empDraft = t.value; return; }
   if (t.id === 'qsearch') { S.ui.qText = t.value; const l = document.getElementById('qlist'); if (l) l.innerHTML = qListHTML(); return; }
   if (t.dataset.act !== 'slider') return;
   S.sim.cfg[t.dataset.k] = +t.value; const pos = document.activeElement === t; render();
   if (pos) { const n = document.querySelector(`[data-k="${t.dataset.k}"]`); if (n) n.focus(); }
 });
+document.addEventListener('focusin', (ev) => { S.ui.empFocus = ev.target.id === 'empin'; });
 document.addEventListener('submit', (ev) => {
+  if (ev.target.dataset.act === 'empform') { ev.preventDefault(); const t = $('#empin'); if (t) employeeSay(t.value); return; }
   if (ev.target.dataset.act !== 'liveform') return; ev.preventDefault();
-  const ta = $('#livein'); if (ta && ta.value.trim()) sendLive(ta.value);
+  const ta = $('#livein'); if (ta && ta.value.trim()) { if (S.chat && S.chat.human) memberToHuman(ta.value); else sendLive(ta.value); }
 });
 document.addEventListener('keydown', (ev) => {
-  if (ev.target.id === 'livein' && ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); ev.target.form.requestSubmit(); }
+  if ((ev.target.id === 'livein' || ev.target.id === 'empin') && ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); ev.target.form.requestSubmit(); }
 });
 render();
 checkLive();

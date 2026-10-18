@@ -276,10 +276,6 @@ nav button[aria-selected=true]{background:var(--ink);color:var(--card)}
 /* ---- demo controls: a button above the phone that opens a popover ---- */
 .grid-member{grid-template-columns:400px minmax(0,1fr)}
 @media(max-width:1100px){.grid-member{grid-template-columns:1fr}}
-.demo-wrap{position:relative;width:380px;margin:0 auto 12px}
-.demo-btn{display:flex;align-items:center;gap:8px;width:100%;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:14px;padding:10px 14px;font-weight:700;text-align:left;min-height:46px}
-.demo-btn:hover,.demo-btn[aria-expanded=true]{background:var(--teal-soft)}
-.demo-btn .chev{margin-left:auto}
 .pop{position:absolute;top:calc(100% + 8px);left:0;width:min(380px,92vw);max-height:min(78vh,760px);overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 18px 50px rgba(0,0,0,.28);z-index:40}
 .pop-h{display:flex;justify-content:space-between;align-items:center;padding:10px 12px 10px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--card);z-index:1}
 .pop-x{width:40px;height:40px;border-radius:10px;border:0;background:transparent;color:var(--ink);font-size:26px;line-height:1}
@@ -368,3 +364,68 @@ body.modal-open{overflow:hidden}
 .qlist{position:absolute;left:0;right:0;top:calc(100% + 6px);max-height:360px;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 40px rgba(0,0,0,.28);z-index:30}
 .qitem{display:flex;gap:10px;align-items:center;flex-wrap:wrap;width:100%;text-align:left;background:transparent;border:0;border-top:1px solid var(--line);padding:10px 14px;color:var(--ink);font-size:15px}
 .qitem:first-child{border-top:0}.qitem:hover,.qitem:focus-visible,.qitem[aria-selected=true]{background:var(--teal-soft)}
+
+.miss{margin-top:4px;padding-left:2px;line-height:1.5}
+
+.cfgbtn{margin-left:auto;align-self:center;display:flex;align-items:center;gap:8px;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:99px;padding:6px 8px 6px 14px;font-size:13.5px}
+.cfgbtn:hover,.cfgbtn[aria-expanded=true]{background:var(--teal-soft)}
+.cfgbtn+.themebtn{margin-left:8px}
+.top .brand{order:1}.top .cfgbtn,.top .themebtn{order:2}.top nav{order:3;flex-basis:100%}
+/* phone fits the window; long-print content scrolls instead of being cut off */
+.phone{height:min(760px,calc(100vh - 165px));min-height:540px}
+@media(min-width:1101px){.grid-member>section:first-child{position:sticky;top:12px}}
+.phone .lock{min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.phone.is-lock .lock{padding-top:34px;padding-bottom:24px}
+.phone.is-lock .lock .time{font-size:56px;letter-spacing:-2px}
+.phone.is-lock .lock .ldate{margin:0 0 2px}
+.phone.is-lock .lwho{margin:4px 0 14px}
+.lockact{position:sticky;bottom:-24px;margin:0 -14px -24px;padding:14px 14px 24px;background:linear-gradient(rgba(15,30,43,0),#0F1E2B 28%)}
+/* extra-large print: keep the conversation visible, make the answer area scroll */
+.phone.is-chat.xl .hear{display:none}
+.phone.is-chat.xl .foot{max-height:52%}
+.phone.is-chat .livebox textarea{min-height:0;height:calc(44px*var(--ts))}
+/* sticky header; larger phone that sits just below it */
+.top{position:sticky;top:0;z-index:50}
+.phone{width:420px;height:min(860px,calc(100vh - 165px));min-height:560px}
+.grid-member{grid-template-columns:440px minmax(0,1fr)}
+@media(max-width:1100px){.grid-member{grid-template-columns:1fr}}
+@media(min-width:1101px){.grid-member>section:first-child{top:138px}}
+/* smoother arrival of the voice button and answer area */
+@keyframes soft{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+.phone .foot.fresh .mic,.phone .foot.fresh .hear,.phone .foot.fresh .livebox,.phone .foot.fresh .micnote{animation:soft .9s cubic-bezier(.22,.8,.24,1) both}
+.phone .foot.fresh .hear{animation-delay:.12s}.phone .foot.fresh .livebox{animation-delay:.24s}
+.phone .foot.fresh .choice:nth-of-type(1){animation-delay:.32s}.phone .foot.fresh .choice:nth-of-type(2){animation-delay:.42s}.phone .foot.fresh .choice:nth-of-type(3){animation-delay:.52s}.phone .foot.fresh .choice:nth-of-type(n+4){animation-delay:.62s}
+.phone .foot.fresh{animation:footfade .5s ease both}
+@keyframes footfade{from{background:transparent}to{background:var(--card)}}
+@media (prefers-reduced-motion:reduce){.phone .foot.fresh .mic,.phone .foot.fresh .hear,.phone .foot.fresh .livebox,.phone .foot.fresh .micnote,.phone .foot.fresh{animation:none}}
+/* employee console: summary + events on the left, actions that follow you on the right */
+.cgrid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start}
+.cmain{min-width:0}
+.cside{position:sticky;top:138px}
+.actcol{display:flex;flex-direction:column;gap:8px}.actcol .btn{width:100%}
+.acts .mini{margin:4px 0 0;padding-left:18px;font-size:13px}
+@media(max-width:1000px){.cgrid{grid-template-columns:1fr}.cside{position:static;order:-1}}
+/* employee console side: compact actions + live conversation */
+.cside{display:flex;flex-direction:column;gap:12px;max-height:calc(100vh - 150px)}
+.cside .acts{flex:none}
+.actcol{display:grid;grid-template-columns:1fr 1fr;gap:6px}.actcol .btn{padding:8px 10px;font-size:13px;min-height:40px}
+.convo{flex:1;min-height:180px;display:flex;flex-direction:column;overflow:hidden}
+.convo h2{margin-bottom:8px}
+.convo .cbody{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;min-height:0}
+.convo .tl-msg{font-size:13.5px}
+@media(max-width:1000px){.cside{max-height:none}.convo{min-height:0}.convo .cbody{max-height:320px}}
+/* a Sound team member in the chat */
+.phone .msg.emp{border-left:4px solid var(--accent);background:#FFF6E0}
+.phone .msg .who{display:block;font-size:.72em;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:#7A5A00;margin-bottom:2px;font-family:'Plus Jakarta Sans',system-ui,sans-serif}
+.tl-msg.emp{border-left:4px solid var(--accent)}
+.empbox{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.empbox textarea{width:100%;box-sizing:border-box;border:1.5px solid var(--line);border-radius:12px;padding:8px 10px;font:inherit;font-size:13.5px;background:var(--card);color:var(--ink);resize:none}
+.empbtns{display:flex;gap:6px}.empbtns .btn{flex:1}
+.cside{overflow-y:auto;padding-right:2px}
+.cside .acts{padding:14px}
+.convo{min-height:260px}
+.cside .convo{order:-1;min-height:300px}
+.cgrid{grid-template-columns:minmax(0,1fr) 420px}
+@media(max-width:1200px){.cgrid{grid-template-columns:minmax(0,1fr) 360px}}
+@media(max-width:1000px){.cgrid{grid-template-columns:1fr}}
+.cside .convo{padding:14px 16px}.cside .acts{padding:14px 16px}

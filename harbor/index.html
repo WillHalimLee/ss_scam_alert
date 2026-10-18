@@ -16,16 +16,17 @@
   <nav role="tablist" aria-label="Views">
     <button role="tab" data-tab="member" aria-selected="true">Member app</button>
     <button role="tab" data-tab="console" aria-selected="false">Employee console <span id="badge" class="badge" hidden>0</span></button>
-    <button role="tab" data-tab="trigger" aria-selected="false">How triggers fire</button>
     <button role="tab" data-tab="sim" aria-selected="false">Trigger simulator</button>
     <button role="tab" data-tab="arch" aria-selected="false">Architecture</button>
     <button role="tab" data-tab="pipe" aria-selected="false">Live pipeline</button>
     <button role="tab" data-tab="notes" aria-selected="false">Design notes</button>
     <a class="navlink" href="inspector.html" target="_blank" rel="noopener" title="See exactly what the model is sent and returns">Model inspector ↗</a>
   </nav>
+  <button type="button" id="cfgBtn" class="cfgbtn" data-act="demo" aria-haspopup="dialog" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"></path><circle cx="16" cy="7" r="2"></circle><circle cx="8" cy="17" r="2"></circle></svg><b>Config</b><span id="cfgInfo" class="chip grey"></span></button>
   <button type="button" id="themeBtn" class="themebtn" aria-pressed="false">☾ Dark mode</button>
 </header>
 <main id="view"></main>
+<div id="cfgpop"></div>
 <script src="data.js"></script>
 <script src="snapshot.js"></script>
 <script src="engine.js"></script>
