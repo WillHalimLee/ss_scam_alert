@@ -13,7 +13,6 @@ HuskyHack 2026 entry for Sound Credit Union. Harbor spots the moment a member ma
 | `backend/` | Streaming pipeline: Kafka-compatible bus, rules scorer, LLM tagger, notification agent, retro job. See `backend/ARCHITECTURE.md`. |
 | `data/` | The challenge's synthetic events and member key. |
 | `submission/` | `gallery/`: the 10 pitch slides as 3:2 PNGs for the Devpost gallery. `slides-16x9/`: same slides at 16:9. `gallery-screenshots/`: prototype screenshots. `SUBMISSION.md` is the write-up. |
-| `proposed_idea.md` | The original proposal and design notes. |
 
 ## Run it locally
 
