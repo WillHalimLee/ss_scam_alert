@@ -23,7 +23,7 @@ async function chatTools({ model, system, user, tools, handlers, terminal = [], 
       const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), timeoutMs);
       let j; try {
         const r = await fetch(agent.OLLAMA + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
-          body: JSON.stringify({ model, stream: false, keep_alive: '30m', options: { temperature: 0.2, num_predict: 200, num_ctx: 4096 }, tools: tools.map((t) => ({ type: 'function', function: t })), messages }) });
+          body: JSON.stringify({ model, stream: false, keep_alive: '30m', options: { temperature: 0.2, num_predict: 200, num_ctx: agent.NUM_CTX }, tools: tools.map((t) => ({ type: 'function', function: t })), messages }) });
         j = await r.json(); if (!r.ok) throw new Error('upstream ' + r.status + ' ' + JSON.stringify(j).slice(0, 160));
       } finally { clearTimeout(to); }
       usage = { prompt_tokens: j.prompt_eval_count, output_tokens: j.eval_count, tokens_per_sec: j.eval_count && j.eval_duration ? +(j.eval_count / (j.eval_duration / 1e9)).toFixed(1) : null };
@@ -48,7 +48,7 @@ async function chatTools({ model, system, user, tools, handlers, terminal = [], 
 async function chatSchema({ model, system, user, schema, kind = 'tag', label = '', timeoutMs = 20000 }) {
   const p = agent.provider(); if (!p || p.name !== 'ollama') return null;
   const messages = [{ role: 'user', content: user }], meta = {}; let out = null, error = null;
-  try { out = agent.extractJSON(await agent.callModel(Object.assign({}, p, { model, timeoutMs }), system, messages, meta, schema, { temperature: 0.1, num_predict: 160, num_ctx: 4096 }) || ''); }
+  try { out = agent.extractJSON(await agent.callModel(Object.assign({}, p, { model, timeoutMs }), system, messages, meta, schema, { temperature: 0.1, num_predict: 160 }) || ''); }
   catch (e) { error = e.message; }
   agent.trace.record({ kind, label, provider: 'ollama', model, latencyMs: meta.latencyMs, usage: meta.usage, input: { system, messages }, output: { raw: meta.raw, parsed: out, final: out }, error: error || undefined, guardrails: [] });
   if (error) throw new Error(error);

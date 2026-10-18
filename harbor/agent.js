@@ -123,6 +123,9 @@ async function post(url, headers, body, ms) {
 }
 
 const OLLAMA = process.env.OLLAMA_HOST || 'http://localhost:11434';
+/** One context size for every call. Ollama reloads a model whenever num_ctx changes, and left unset it loads the model's full 128K
+ *  context (about 32 GB for the vision model), which evicts the other models. Our largest prompt is about 3K tokens. */
+const NUM_CTX = 8192;
 async function callModelInner(p, system, messages, meta, schema, options) {
   if (p.name === 'openai') {
     const j = await post('https://api.openai.com/v1/chat/completions', { authorization: 'Bearer ' + process.env.OPENAI_API_KEY },
@@ -138,7 +141,7 @@ async function callModelInner(p, system, messages, meta, schema, options) {
   }
   if (p.name === 'ollama') {
     const j = await post(OLLAMA + '/api/chat', {},
-      { model: p.model, stream: false, format: schema || 'json', keep_alive: '30m', options: Object.assign({ temperature: 0.4, num_predict: 450 }, options), messages: [{ role: 'system', content: system }, ...messages] }, p.timeoutMs);
+      { model: p.model, stream: false, format: schema || 'json', keep_alive: '30m', options: Object.assign({ temperature: 0.4, num_predict: 450 }, options, { num_ctx: NUM_CTX }), messages: [{ role: 'system', content: system }, ...messages] }, p.timeoutMs);
     meta.usage = { prompt_tokens: j.prompt_eval_count, output_tokens: j.eval_count, model_ms: j.eval_duration ? Math.round(j.eval_duration / 1e6) : null,
       load_ms: j.load_duration ? Math.round(j.load_duration / 1e6) : null, tokens_per_sec: j.eval_count && j.eval_duration ? +(j.eval_count / (j.eval_duration / 1e9)).toFixed(1) : null };
     return j.message.content;
@@ -266,4 +269,4 @@ async function chat(body) {
  *  so ratings can be compared before and after a change. */
 const VERSION = require('crypto').createHash('sha1').update([systemPrompt, shapeReply, sanitize, SAID, BAD_REPLY, SAFE_FALLBACK].map(String).join('\n')).digest('hex').slice(0, 8);
 
-module.exports = { trace, chat, provider, callModel, OLLAMA, VERSION, extractJSON, BAD_REPLY, RED_FLAGS };
+module.exports = { trace, chat, provider, callModel, OLLAMA, NUM_CTX, VERSION, extractJSON, BAD_REPLY, RED_FLAGS };

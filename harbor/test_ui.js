@@ -24,7 +24,7 @@ function boot() {
   vm.createContext(ctx);
   for (const f of ['data.js', 'engine.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
   const src = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
-  const hook = 'window.__t = { S, R, scen, render, memberHTML, consoleHTML, simHTML, archHTML, pipeHTML, notesHTML, startChat, choose, sendLive, sendPayment, beginStory, finish, syncCase, node, scenarioDecision, takeOver, employeeSay, memberMfa, startMemberFtc, memberFtcChoose, memberFtcAnswer, ftcHTML, joinReason, checkLive };\n})();';
+  const hook = 'window.__t = { S, R, scen, render, memberHTML, consoleHTML, simHTML, archHTML, pipeHTML, notesHTML, startChat, choose, sendLive, sendPayment, beginStory, finish, syncCase, node, scenarioDecision, takeOver, employeeSay, memberMfa, startMemberFtc, memberFtcChoose, memberFtcAnswer, ftcHTML, joinReason, checkLive, shotPickerHTML, applyShot };\n})();';
   if (!/\}\)\(\);\s*$/.test(src)) throw new Error('app.js no longer ends with its IIFE: update test_ui.js');
   vm.runInContext(src.replace(/\}\)\(\);\s*$/, hook), ctx);
   return { T: ctx.__t, errors };
@@ -79,6 +79,8 @@ async function story(T, id) {
   for (const [tab, f] of [['member', 'memberHTML'], ['console', 'consoleHTML'], ['sim', 'simHTML'], ['arch', 'archHTML'], ['pipe', 'pipeHTML'], ['notes', 'notesHTML']]) {
     try { T.S.tab = tab; T.render(); const h = T[f](); check(h.length > 200, `${tab} tab renders`); } catch (e) { check(false, `${tab} tab throws: ${e.message}`); }
   }
+  { T.S.sc = 'linda'; const h = T.shotPickerHTML(), f = [...h.matchAll(/data-f="(\w+)"/g)].map((m) => m[1]);
+    check(f.length === 5 && f[0] === 'lawyer_gift_cards' && f.every((x) => fs.existsSync(path.join(__dirname, 'fixtures', 'screenshots', x + '.png'))), 'camera picker lists the sample screenshots, this story\'s first'); }
   console.log(`tabs           ${fails ? 'FAIL' : 'ok'}`);
   for (const id of ['sarah', 'linda', 'michael', 'james', 'mover', 'closing', 'grand'].filter((x) => !only || only.includes(x))) {
     const before = fails;
@@ -95,6 +97,15 @@ async function story(T, id) {
     check(k2.msgs.some((m) => m.f === 'emp'), "the employee's messages stay in the ended conversation");
     check(!!rec.chat.ftc, 'the FTC follow-up starts once the chat ends');
     console.log(`${(fails > before ? 'FAIL' : 'ok').padEnd(5)}staff work survives the end of the chat`);
+  }
+  if (!only || only.includes('linda')) {                                       // a screenshot with clear warning signs: Harbor recommends cancelling, no hand-off
+    const before = fails, S = T.S; S.tab = 'member'; S.sc = 'linda'; const rec = T.R(); rec.phone = { step: 'chat' }; T.startChat(rec); const ch = rec.chat; await until(() => !ch.queue.length, 4000);
+    T.applyShot(ch, { findings: { kind: 'text_message', claims_to_be: 'Daniels Law Office', money_requested: '$8,500' }, decision: { risk: 'high', flags: ['Wants payment by gift cards', 'Told to keep it secret'], next_steps: [], signals: ['secrecy_or_isolation'] } }, '', Date.now());
+    T.render(); const h = T.memberHTML();
+    check(/I recommend we cancel it/.test(h) && /data-act="choose" data-i="0">Yes, cancel the payment/.test(h), 'Harbor recommends cancelling, and cancelling is the first option');
+    check(!ch.joinReq, 'no person is pulled in just for the screenshot');
+    T.choose(0); check(ch.outcome === 'cancelled', 'one tap cancels the payment');
+    console.log(`${(fails > before ? 'FAIL' : 'ok').padEnd(5)}high-risk screenshot leads to a cancel`);
   }
   if (errors.length) { fails++; console.log('\nconsole.error during the run:\n  ' + errors.slice(0, 5).join('\n  ')); }
   console.log(fails ? `\n${fails} problem(s)` : '\nall good'); process.exit(fails ? 1 : 0);

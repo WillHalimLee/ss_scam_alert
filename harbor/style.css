@@ -528,6 +528,10 @@ nav button.lit{animation:lit 1.1s ease-out 3}
 .joinreq{display:flex;align-items:center;gap:12px;margin:0 0 12px;padding:12px 14px;border-radius:14px;background:var(--red-soft);border:1.5px solid var(--red);animation:stepin .4s cubic-bezier(.2,.7,.2,1) both}
 .joinreq .jr-ic{font-size:24px;line-height:1}.joinreq .jr-t{flex:1;display:flex;flex-direction:column;gap:2px}.joinreq .jr-t b{font-size:15px}
 .jr-pulse{animation:steppulse 1.6s infinite}
+.ratereq{background:var(--warn-soft);border-color:var(--warn)}
+.efb.req{border:1.5px solid var(--red);box-shadow:0 0 0 3px var(--red-soft)}
+.empq{display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin-top:8px}
+.empq .choice{min-height:0;font-size:13.5px;line-height:1.35;padding:6px 12px;border-radius:14px}
 @media (prefers-reduced-motion:reduce){.joinreq,.jr-pulse{animation:none}}
 
 /* FTC report draft: filed by the employee with the member, never sent automatically */
@@ -548,6 +552,12 @@ nav button.lit{animation:lit 1.1s ease-out 3}
 .phone .shotbtn{background:var(--card);color:var(--ink);border:1.5px solid var(--line)}
 .phone .microw{display:flex;gap:10px;justify-content:center;width:100%}
 .phone .microw .mic{margin:0}
+.shotpick{width:100%;padding:10px;border:1px solid var(--line);border-radius:14px;background:var(--card);margin-bottom:8px}
+.shotpick-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.shotgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px}
+.shotpic{display:flex;flex-direction:column;gap:4px;padding:0;border:0;background:none;cursor:pointer;text-align:left;font:inherit;font-size:12px;line-height:1.25;color:var(--ink)}
+.shotpic img{width:100%;aspect-ratio:3/4;object-fit:cover;object-position:left top;border-radius:8px;border:1px solid var(--line);background:#fff}
+.shotpic:focus-visible img,.shotpic:hover img{outline:2px solid var(--teal);outline-offset:1px}
 .msg .shotimg{display:block;max-width:180px;max-height:260px;border-radius:10px}
 .shotrow{display:flex;gap:12px;align-items:flex-start}.shotthumb{width:96px;max-height:180px;object-fit:cover;border-radius:8px;border:1px solid var(--line);flex:none}
 .fb.mfa{border-color:var(--teal);background:var(--teal-soft)}.mfabtns{display:flex;flex-direction:column;gap:6px}.mfabtns .btn{width:100%}.mfadone{margin:0 0 8px;color:var(--green);font-weight:600}

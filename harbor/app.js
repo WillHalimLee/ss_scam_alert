@@ -318,9 +318,22 @@ function liveCtx(c) {
 }
 /* ---------- screenshot tool: the member can send a screenshot any time (📷), Harbor offers it when the member mentions a text, email,
    link, website or app, and an employee can ask for one. The screenshot service reads it; code decides what it means. ---------- */
-const SHOT_HINT = /\b(text(ed|s)?|message|sms|e-?mail|link|website|site|app|dm|whatsapp|instagram|facebook|messenger|screenshot|pop-?up|ad)\b/i;
+const SHOT_HINT = /\b(text(ed|ing|s)?|messag(e|es|ed|ing)|sms|e-?mail(ed|s)?|link|website|site|app|dm'?d?|whatsapp|instagram|facebook|messenger|screenshot|pop-?up|ad|sent me|wrote (to )?me)\b/i;
 const KIND_LABEL = { text_message: 'a text message', email: 'an email', chat_or_dm: 'a chat message', social_media_post: 'a social media post', website: 'a website', payment_app: 'a payment app screen', call_log: 'a call log', bank_or_app_screen: 'an app screen', other: 'a screenshot' };
 const shotBtn = (busy) => (S.live.shot ? `<button type="button" class="mic shotbtn" data-act="shot" aria-label="Send a screenshot" title="Send a screenshot" ${busy ? 'disabled' : ''}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button><input type="file" id="shotin" accept="image/*" hidden>` : '');
+/** The phone's photo picker for the demo: the sample screenshots in harbor/fixtures, the current story's own first, plus any file. */
+const SHOT_DEMOS = [['fake_sound', 'Text "from Sound" asking for a code', 'sarah'], ['lawyer_gift_cards', 'Lawyer asking for gift cards', 'linda'], ['crypto_dm', 'Crypto investment DM', 'michael'],
+  ['contractor_invoice', 'Roofing contractor invoice', 'grand'], ['real_sound_alert', 'A real Sound notice', '']];
+function shotPickerHTML() {
+  const list = [...SHOT_DEMOS].sort((x, y) => (y[2] === S.sc) - (x[2] === S.sc));
+  return `<div class="shotpick" role="dialog" aria-label="Choose a screenshot"><div class="shotpick-h"><b>Recent screenshots</b><button type="button" class="linkbtn" data-act="shotclose">Cancel</button></div>
+    <div class="shotgrid">${list.map(([f, label]) => `<button type="button" class="shotpic" data-act="shotpick" data-f="${f}"><img src="fixtures/screenshots/${f}.png" alt=""><span>${esc(label)}</span></button>`).join('')}</div>
+    <button type="button" class="btn ghost sm block" data-act="shotfile">Choose another file…</button></div>`;
+}
+async function pickDemoShot(ch, f) {
+  try { const b = await (await fetch(`fixtures/screenshots/${f}.png`)).blob(); return sendShot(ch, b); }
+  catch (e) { ch.msgs.push({ f: 'bot', h: 'Sorry, I couldn\'t open that screenshot.' }); render(); }
+}
 function offerShot(ch, who = 'bot') {
   if (!S.live.shot || ch.shotOffer || (ch.shots || []).length || ch.outcome) return;
   ch.shotOffer = true; ch.msgs.push({ f: who, h: 'If you have it, you can send me a screenshot of that message. I\'ll take a look and tell you what I see.' });
@@ -342,7 +355,15 @@ async function analyzeShot(ch, url) {
   empPing('📷 ' + memberName(ch.c.sc.mid) + ' sent a screenshot', ch.c.sc.mid);
   const t0 = Date.now();
   try {
-    const r = await post('/api/screenshot/analyze', { image: url, case_id: caseId(ch), member_id: ch.c.sc.mid });
+    applyShot(ch, await post('/api/screenshot/analyze', { image: url, case_id: caseId(ch), member_id: ch.c.sc.mid }), url, t0);
+  } catch (e) {
+    ch.msgs.push({ f: 'bot', h: /503|404/.test(e.message) ? 'Screenshot reading isn\'t set up right now. You can describe the message in your own words instead.' : 'Sorry, I couldn\'t read that screenshot. You can describe the message in your own words instead.' });
+  }
+  ch.shotBusy = false; ch.typing = false; render();
+}
+/** What Harbor says about a screenshot. Clear warning signs: Harbor tells the member and recommends cancelling (code picks the
+ *  buttons; she stays in control). Anything less: the usual rules for asking a person to join. */
+function applyShot(ch, r, url, t0) {
     const f = r.findings, d = r.decision, from = f.claims_to_be || f.sender;
     const lines = [`I can see ${KIND_LABEL[f.kind] || 'a screenshot'}${from ? ` from <b>${esc(from)}</b>` : ''}${f.money_requested ? ` asking for <b>${esc(f.money_requested)}</b>` : ''}.`,
       d.flags.length ? 'What stands out: ' + d.flags.map((x) => esc(x.charAt(0).toLowerCase() + x.slice(1))).join(', ') + '.' : '', ...d.next_steps.slice(0, 3).map(esc)].filter(Boolean);
@@ -350,12 +371,26 @@ async function analyzeShot(ch, url) {
     ch.msgs.push({ f: 'bot', h: lines.join(' ') });
     mirror('in', '📷 Sent a screenshot (' + (KIND_LABEL[f.kind] || 'screenshot') + (from ? ' from ' + from : '') + ')', true, ch); mirror('out', lines.join(' ').replace(/<[^>]+>/g, ''), true, ch, 'screenshot');
     track('screenshot', ch, { kind: f.kind, risk: d.risk, flags: d.flags }, Date.now() - t0);
-    if (ch.live) { for (const sg of d.signals) ch.live.signals[sg] = true; const why = !ch.joinReq && (d.risk === 'high' ? 'sent a screenshot with clear warning signs' : joinReason(ch)); if (why) requestJoin(ch, why); }
-    else if (d.risk === 'high' && !ch.joinReq) requestJoin(ch, 'sent a screenshot with clear warning signs');
-  } catch (e) {
-    ch.msgs.push({ f: 'bot', h: /503|404/.test(e.message) ? 'Screenshot reading isn\'t set up right now. You can describe the message in your own words instead.' : 'Sorry, I couldn\'t read that screenshot. You can describe the message in your own words instead.' });
-  }
-  ch.shotBusy = false; ch.typing = false; render();
+    if (ch.live) for (const sg of d.signals) ch.live.signals[sg] = true;
+    if (d.risk === 'high' && !ch.human) {
+      const c = ch.c, pay = 'your ' + esc(c.pay);
+      ch.shotAdvice = true;
+      ch.msgs.push({ f: 'bot', h: c.ato ? `This message has the signs of an account takeover scam. Nothing has left your account: ${pay} is stopped for now. <b>I recommend we stop it for good and protect your account.</b> Shall I do that now?`
+        : `This message has the signs of a scam, so please don't send money or gift cards to them. Nothing has left your account: ${pay} hasn't gone out. <b>I recommend we cancel it.</b> Would you like me to cancel it now?` });
+      mirror('out', 'Screenshot shows clear warning signs: Harbor recommended cancelling the payment.', true, ch, 'screenshot');
+    } else if (ch.live) { const why = !ch.joinReq && joinReason(ch); if (why) requestJoin(ch, why); }
+}
+/** After a screenshot with clear warning signs: cancelling comes first. */
+function adviceChips(ch) {
+  const c = ch.c;
+  return c.ato ? [{ t: 'Yes, stop the payment and protect my account', end: 'ato_stop' }, { t: 'Talk to a Sound employee', end: 'human' }]
+    : [{ t: 'Yes, cancel the payment', end: 'cancelled' }, { t: 'Keep it paused while I check', end: 'paused_self' }, { t: 'Talk to a Sound employee', end: 'human' }, { t: 'I understand the risk. Send it anyway', end: 'override' }];
+}
+function adviceChoose(i, how) {
+  const ch = S.chat, opts = adviceChips(ch), pick = opts[i]; if (!pick) return;
+  chosen(ch, pick.t, i, opts.length, how);
+  ch.msgs.push({ f: 'me', h: esc(pick.t) }); ch.answers.push({ q: 'screenshot-advice', a: pick.t }); mirror('in', pick.t, true); empPing('Member chose: "' + pick.t + '"');
+  finish(pick.end); render();
 }
 
 /* ---------- asking a person to join: code (not the model) decides when Harbor should not carry the conversation alone ---------- */
@@ -404,6 +439,7 @@ async function sendLive(text, via = S.voice.fromVoice ? 'voice' : 'keyboard') {
   refreshLog();
 }
 function liveChoose(i, how = 'tap') {
+  if (S.chat.shotAdvice && !S.chat.human) return adviceChoose(i, how);
   const ch = S.chat, L = ch.live, opts = liveChips(ch), pick = opts[i]; if (!pick || L.pending) return;
   chosen(ch, pick.t, i, opts.length, how);
   if (pick.text) return sendLive(pick.t, 'option');
@@ -414,6 +450,7 @@ function liveChoose(i, how = 'tap') {
   render();
 }
 function choose(i, how = 'tap') {
+  if (S.chat.shotAdvice && !S.chat.human) return adviceChoose(i, how);
   if (S.chat.live) return liveChoose(i, how);
   const ch = S.chat, n = node(ch.cur, ch.c), pick = n.choices[i];
   chosen(ch, pick.t, i, n.choices.length, how);
@@ -465,7 +502,16 @@ function memberFeedback(ch) {
   const c = ch.c, L = ch.live, fb = ch.fb;
   sendFeedback(fb, { source: 'member', score: fb.score, comment: fb.text, case_id: caseId(ch), member_id: c.sc.mid, outcome: ch.outcome, mode: ch.wasLive ? 'live' : 'guided',
     context: { story: c.sc.id, level: c.dec.level, rules: c.dec.rules.map((r) => r.id), path: ch.path, answers: ch.answers, transcript: transcript(ch.msgs),
-      signals: L ? Object.keys(L.signals).filter((k) => L.signals[k]) : [], member_state: L && L.state, handoff_note: L && L.note, provider: S.live.provider, model: S.live.model, text_size: S.textSize } });
+      signals: L ? Object.keys(L.signals).filter((k) => L.signals[k]) : [], member_state: L && L.state, handoff_note: L && L.note, provider: S.live.provider, model: S.live.model, text_size: S.textSize } },
+    () => { const k = S.cases[c.sc.mid]; if (!k) return;                       // the member rated Harbor: the employee now owes a rating of the agent on this case
+      caseNote(k, `Member rated Harbor ${fb.score}/5`); if (!(k.efb && k.efb.sent)) empPing(`⭐ ${memberName(c.sc.mid)} rated Harbor ${fb.score}/5. Your rating of the agent is needed to close the case.`, c.sc.mid, 12000); });
+}
+/** The member has rated Harbor and the employee has not: the employee's rating is required before the case can be closed out. */
+const needsEmpRating = (k) => { const rec = k && recOf(k.mid), ch = rec && rec.chat; return !!(ch && ch.fb && ch.fb.sent && !(k.efb && k.efb.sent)); };
+function ratingBanner(k) {
+  if (!needsEmpRating(k)) return '';
+  const fb = recOf(k.mid).chat.fb;
+  return `<div class="joinreq ratereq" role="alert"><span class="jr-ic" aria-hidden="true">⭐</span><div class="jr-t"><b>${esc(memberName(k.mid))} rated Harbor ${fb.score}/5${fb.text ? `: “${esc(fb.text.length > 90 ? fb.text.slice(0, 90) + '…' : fb.text)}”` : ''}</b><span class="small">Rate the agent on this case. Close-out stays locked until you do.</span></div><button type="button" class="btn sm" data-act="efbgo">Rate now</button></div>`;
 }
 function caseSnapshot(k) {
   const rec = recOf(k.mid);
@@ -513,12 +559,14 @@ function employeeFbHTML(k) {
       <p class="small muted" style="margin:4px 0 6px">${fb.score ? `${fb.score} · ${L[fb.score]}` : '1 = very poor, 5 = very good'}</p>
       ${fb.score ? `<textarea id="efbtext" rows="2" maxlength="1000" placeholder="What worked, or what should Harbor have said? (optional)" aria-label="Rating comment">${esc(fb.text || '')}</textarea>
       <button type="button" class="btn sm block" data-act="efbsend" ${fb.busy ? 'disabled' : ''}>Save rating</button>` : ''}${fb.err ? `<p class="small" style="color:var(--red)">${esc(fb.err)}</p>` : ''}`;
-  return `<section class="card efb"><h2>Rate Harbor on this case</h2>${body}</section>${verdictHTML(k)}`;
+  const req = needsEmpRating(k), mfb = req && recOf(k.mid).chat.fb;
+  return `<section class="card efb${req ? ' req' : ''}" id="efb"><h2>Rate Harbor on this case ${req ? '<span class="chip red">Required</span>' : ''}</h2>${req ? `<p class="small" style="margin:0 0 8px">The member gave Harbor <b>${mfb.score}/5</b>. How did the agent do from your side?</p>` : ''}${body}</section>${verdictHTML(k)}`;
 }
 const VERDICT = { 1: ['Confirmed scam', 'red'], '-1': ['Legitimate', 'green'], 0: ['Unsure', 'grey'] };
 /** Close-out: was it really a scam? Feedback measures the experience; this labels whether Harbor was right. */
 function verdictHTML(k) {
   const fb = k.vfb ||= {}, scam = fb.score === 1;
+  if (!fb.sent && needsEmpRating(k)) return `<section class="card efb locked"><h2>Close-out: was it a scam?</h2><p class="small muted" style="margin:0">🔒 Rate Harbor above first. The member already gave feedback, so close-out opens once you have too.</p></section>`;
   const body = fb.sent ? `<p class="small" style="margin:0">Recorded: <span class="chip ${VERDICT[fb.score][1]}">${VERDICT[fb.score][0]}</span>${scam ? ` lost ${money(+fb.loss || 0)}, recovered ${money(+fb.recovered || 0)}` : ''}</p><button type="button" class="linkbtn" data-act="vfbredo">Change</button>`
     : `<div class="rate" role="radiogroup" aria-label="Final verdict">${[1, -1, 0].map((v) => `<button type="button" class="ratebtn" data-act="vfb" data-v="${v}" role="radio" aria-checked="${fb.score === v}">${VERDICT[v][0]}</button>`).join('')}</div>
       ${scam ? `<div class="vmoney"><label class="small">Money lost $<input id="vfbloss" type="number" min="0" step="1" value="${esc(fb.loss || '')}"></label><label class="small">Recovered $<input id="vfbrec" type="number" min="0" step="1" value="${esc(fb.recovered || '')}"></label></div>` : ''}
@@ -663,7 +711,7 @@ function phoneHTML() {
   const split = ch.ftc ? ch.ftc.from : ch.msgs.length;                       // the FTC follow-up comes after the outcome card
   const typingDots = ch.typing || (L && L.pending) || (ch.ftc && ch.ftc.step === 'drafting') ? '<div class="msg bot typing" role="status" aria-label="Harbor is typing"><span></span><span></span><span></span></div>' : '';
   const msgs = ch.msgs.slice(0, split).map(m2h).join(''), after = ch.msgs.slice(split).map(m2h).join('');
-  const opts = busy || ch.human ? [] : L ? liveChips(ch) : n ? n.choices : [];
+  const opts = busy || ch.human ? [] : ch.shotAdvice ? adviceChips(ch) : L ? liveChips(ch) : n ? n.choices : [];
   if (opts.length) { const key = opts.map((x) => x.t).join('|'); if (ch.offKey !== key) { ch.offKey = key; ch.offAt = Date.now(); track('offered', ch, { options: opts.map((x) => x.t), node: L ? 'live' : ch.cur }); } }
   const chips = opts.map((x, i) => `<button class="choice" data-act="choose" data-i="${i}">${esc(x.t)}</button>`).join('');
   const mic = o ? { btn: '', hint: '' } : micParts(busy), hasBox = ch.human || (L && !L.trusted);
@@ -673,7 +721,7 @@ function phoneHTML() {
   // Like the Claude app: tapping the conversation collapses the reply panel to a slim bar at the bottom; tapping the bar brings it back up.
   const min = !!S.ui.footMin && !o;
   const shotChip = ch.shotOffer && !(ch.shots || []).length && !busy && S.live.shot ? '<button class="choice" data-act="shot">📷 Send a screenshot</button>' : '';
-  const reply = mic.hint + (hasBox ? box : busy ? '' : `<div class="microw">${mic.btn}${shotBtn(ch.shotBusy)}</div>`) + shotChip + chips + (ch.human || opts.some((x) => x.end === 'human') ? '' : `<button class="btn ghost sm" data-act="person">Talk to a person</button>`);
+  const reply = (S.ui.shotPick && !busy && !ch.shotBusy ? shotPickerHTML() : '') + mic.hint + (hasBox ? box : busy ? '' : `<div class="microw">${mic.btn}${shotBtn(ch.shotBusy)}</div>`) + shotChip + chips + (ch.human || opts.some((x) => x.end === 'human') ? '' : `<button class="btn ghost sm" data-act="person">Talk to a person</button>`);
   const collapsed = `<div class="cmin"><button type="button" class="cmin-pill" data-act="expand" aria-expanded="false" aria-label="Show the reply panel"><span>${hasBox ? (ch.human ? 'Reply to the Sound team member…' : 'Reply to Harbor…') : 'Choose an answer…'}</span>${opts.length ? `<small>${opts.length} suggested ${opts.length === 1 ? 'answer' : 'answers'}</small>` : ''}</button>${S.voice.supported && !busy ? `<button type="button" class="mic" data-act="mic" aria-label="Tap to speak" title="Tap to speak">${MIC_ICON}</button>` : ''}</div>`;
   const foot = o ? (ch.ftc && ch.ftc.step !== 'done' ? ftcFootHTML(ch) : mfaHTML(ch) + (ch.mfa && ch.mfa.done ? memberFbHTML(ch) : '') + `<button class="btn alt block" data-act="reset">Replay this scenario</button>`) : min ? collapsed : reply;
   const oc = o ? `<div class="outcome ${o.tone}${ch.outcomeSeen ? '' : ' fresh'}"><b>${o.title}</b><br>${o.text}</div>` : ''; if (o) ch.outcomeSeen = true;
@@ -912,8 +960,25 @@ function composerHTML(k) {
   if (ch.outcome) return '<p class="small muted" style="margin:8px 0 0">This conversation has ended.</p>';
   const askShot = S.live.shot && !(ch.shots || []).length && !ch.shotOffer ? '<button type="button" class="linkbtn" data-act="askshot" style="margin-top:6px">📷 Ask the member for a screenshot</button>' : '';
   if (!ch.human) return askShot + (ch.joinReq && !ch.joinReq.answered ? '<button class="btn sm block jr-pulse" data-act="takeover" style="margin-top:8px">🙋 Join chat (Harbor asked)</button>' : '<button class="btn sm block" data-act="takeover" style="margin-top:8px">Take over the chat</button>') + '<p class="small muted" style="margin:6px 0 0">Harbor stays in charge until you do. The member will see that a Sound team member joined.</p>';
-  return `${S.live.shot && !(ch.shots || []).length ? '<button type="button" class="linkbtn" data-act="askshot">📷 Ask for a screenshot</button>' : ''}<form class="empbox" data-act="empform"><textarea id="empin" rows="2" maxlength="600" placeholder="Write to ${esc(memberName(k.mid))}…" aria-label="Message to the member">${esc(S.ui.empDraft || '')}</textarea>
+  const sugg = empReplies(k, ch), quick = sugg.length ? `<div class="empq" role="group" aria-label="Suggested replies"><div class="sum-k">Suggested replies · tap to edit, then send</div>${sugg.map((x, i) => `<button type="button" class="choice" data-act="empq" data-i="${i}">${esc(x)}</button>`).join('')}</div>` : '';
+  return `${S.live.shot && !(ch.shots || []).length ? '<button type="button" class="linkbtn" data-act="askshot">📷 Ask for a screenshot</button>' : ''}${quick}<form class="empbox" data-act="empform"><textarea id="empin" rows="2" maxlength="600" placeholder="Write to ${esc(memberName(k.mid))}…" aria-label="Message to the member">${esc(S.ui.empDraft || '')}</textarea>
     <div class="empbtns"><button class="btn sm" type="submit">Send</button><button type="button" class="btn alt sm" data-act="handback">Hand back to Harbor</button></div></form>`;
+}
+/** Pre-filled replies for an employee in the chat, picked from the case and Harbor's signals. Tapping one fills the box, so it can be
+ *  edited before sending; replies already sent drop out of the list. */
+function empReplies(k, ch) {
+  const name = memberName(k.mid), sig = (ch.live && ch.live.signals) || Object.fromEntries((k.signals || []).map((s) => [s, true]));
+  const ato = k.dec.rules.some((r) => r.id === 'ATO'), ramp = k.dec.rules.some((r) => r.id === 'RAMP');
+  const out = [`Hi ${name}, I'm with Sound's security team. You're safe: the payment is paused and no money has left your account.`];
+  if (ato) out.push('Did you change your password, email or phone today?', 'Please don\'t share any code we send you with anyone, even someone who says they\'re from Sound.', 'I\'ll call you on the phone number we had before today\'s change. Is that okay?');
+  else {
+    const said = ch.msgs.filter((m) => m.f === 'me').map((m) => stripHTML(m.h)).join(' ');   // backstop when the employee joins before Harbor has read the reply
+    if (sig.authority_pressure || sig.secrecy_or_isolation || sig.relative_pressure || sig.urgency || /lawyer|attorney|police|fbi|irs|agent|bail|arrest|secret|not to tell|don'?t tell|gift card/i.test(said)) out.push('A real lawyer, police officer or government agent will never ask you to keep a payment secret or pay by gift card, crypto or wire.', 'It\'s okay to hang up. If you want to check, call them back on a number you look up yourself.');
+    if (ramp || sig.unmet_online_contact || sig.growing_amounts) out.push('Have you met this person in person, or on a live video call?');
+    out.push('Can you tell me who asked you to send this, and how they contacted you?', 'Would it help if I called you so we can go through this together?');
+  }
+  const sent = new Set(ch.msgs.filter((m) => m.f === 'emp').map((m) => stripHTML(m.h)));
+  return out.filter((x) => !sent.has(x)).slice(0, 5);
 }
 function takeOver(on) {
   const k = S.cases[S.sel], rec = k && recOf(k.mid), ch = rec && rec.chat; if (!ch || ch.outcome || ch.human === on) return;
@@ -928,8 +993,9 @@ function employeeSay(text) {
   const k = S.cases[S.sel], rec = k && recOf(k.mid), ch = rec && rec.chat; text = (text || '').trim().slice(0, 600);
   if (!ch || !ch.human || ch.outcome || !text) return;
   const last = (f) => { const m = [...ch.msgs].reverse().find((x) => x.f === f); return m ? stripHTML(m.h) : null; };
-  track('employee_reply', ch, { text, member_said: last('me'), harbor_said: last('bot'), example: true });
-  ch.msgs.push({ f: 'emp', h: esc(text) }); S.ui.empDraft = ''; mirror('out', text, true, ch, 'employee'); render();
+  const pre = S.ui.empPre && S.ui.empPre.k === k.mid ? S.ui.empPre.text : null;             // which suggestion it started from, and whether it was edited
+  track('employee_reply', ch, { text, member_said: last('me'), harbor_said: last('bot'), example: true, suggested: pre, edited: pre ? pre !== text : null });
+  ch.msgs.push({ f: 'emp', h: esc(text) }); S.ui.empDraft = ''; S.ui.empPre = null; mirror('out', text, true, ch, 'employee'); render();
 }
 function memberToHuman(text) {
   const ch = S.chat; text = (text || '').trim().slice(0, 600); if (!ch || !ch.human || !text) return;
@@ -1114,7 +1180,7 @@ function consoleHTML() {
   S.sel = selId;
   const first = (c) => c.dec.rules[0], trig = (c) => (first(c) ? `<span class="chip grey">${esc(TRIGGER[first(c).id] || first(c).id)}</span>` : '');
   const cur = S.cases[selId], at = ids.indexOf(selId);
-  const label = cur ? `<b>${esc(memberName(selId))}</b> <span class="small muted">${esc(selId)}</span><span>${money(cur.dec.amt)} ${esc(cur.dec.rail)}</span>${trig(cur)}${joinChip(sc)}${statusChip(cur)}`
+  const label = cur ? `<b>${esc(memberName(selId))}</b> <span class="small muted">${esc(selId)}</span><span>${money(cur.dec.amt)} ${esc(cur.dec.rail)}</span>${trig(cur)}${joinChip(sc)}${needsEmpRating(cur) ? '<span class="chip red">⭐ Rating needed</span>' : ''}${statusChip(cur)}`
     : `<b>${esc(memberName(sc.mid))}</b> <span class="small muted">${esc(sc.mid)}</span>${notSent ? '<span class="chip grey">Not sent yet</span>' : '<span class="chip green">No held payment</span>'}`;
   const queue = `<section class="card qbox"><div class="qrowbar">
     <div class="qfield">${S.ui.qOpen ? `<input id="qsearch" type="search" autocomplete="off" aria-label="Search held payments" placeholder="Search by name, amount, method, rule or status…" value="${esc(S.ui.qText)}"><div class="qlist" id="qlist" role="listbox">${qListHTML()}</div>`
@@ -1131,7 +1197,7 @@ function consoleHTML() {
   const coach = (isAto ? COACH.ATO : isRamp ? COACH.RAMP : COACH.GENERAL).map((q) => `<li>${esc(q)}</li>`).join('');
   const risk = d.rules.some((r) => ['ATO', 'RAMP', 'HIGHSTAKES', 'CONTACT'].includes(r.id)) ? ['High risk', 'red'] : ['Medium risk', 'warn'];
   return `<div class="console2">${queue}<div class="cgrid"><div class="cmain">
-    ${joinBanner(k)}<section class="card op"><div class="op-h"><h2>${esc(memberName(k.mid))} · ${esc(k.tag)} <span class="chip grey">${esc(k.mid)}</span></h2>${statusChip(k)}</div>
+    ${joinBanner(k)}${ratingBanner(k)}<section class="card op"><div class="op-h"><h2>${esc(memberName(k.mid))} · ${esc(k.tag)} <span class="chip grey">${esc(k.mid)}</span></h2>${statusChip(k)}</div>
       <div class="sum"><div class="sum-k">What this is about</div><p class="sum-h">${esc(headline(k))}</p>
         <div class="sum-chips"><span class="chip ${risk[1]}">${risk[0]}</span>${d.rules.map((r) => `<span class="chip grey">${esc(TRIGGER[r.id] || r.id)}</span>`).join('')}<span class="chip grey">${isAto ? 'SMS to the old phone' : 'App notification'}</span></div>
         ${analystBlock(k)}<div class="sum-k" style="margin-top:12px">Conversation so far</div><p class="sum-p">${esc(convoSummary(k))}</p><p class="small" style="margin:6px 0 0"><b>Status:</b> ${esc(stateLine(k))}</p></div>
@@ -1462,6 +1528,9 @@ document.addEventListener('click', (ev) => {
   else if (a === 'mfbsend') { memberFeedback(S.chat); return; }
   else if (a === 'efb' || a === 'efbredo') { const k = S.cases[S.sel]; if (!k) return; k.efb = a === 'efb' ? Object.assign(k.efb, { score: +t.dataset.v }) : { text: k.efb.text }; }
   else if (a === 'efbsend') { const k = S.cases[S.sel]; if (k) employeeFeedback(k, 'rating'); return; }
+  else if (a === 'empq') { const k = S.cases[S.sel], rec = k && recOf(k.mid), ch = rec && rec.chat, text = ch && empReplies(k, ch)[+t.dataset.i]; if (!text) return;
+    S.ui.empDraft = text; S.ui.empPre = { k: k.mid, text }; render(); const ta = $('#empin'); if (ta) { ta.focus(); ta.setSelectionRange(text.length, text.length); } return; }
+  else if (a === 'efbgo') { const el = $('#efb'); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); const b = el.querySelector('.ratebtn'); if (b) b.focus({ preventScroll: true }); } return; }
   else if (a === 'vfb' || a === 'vfbredo') { const k = S.cases[S.sel]; if (!k) return; k.vfb = a === 'vfb' ? Object.assign(k.vfb, { score: +t.dataset.v }) : { text: k.vfb.text, loss: k.vfb.loss, recovered: k.vfb.recovered }; }
   else if (a === 'ftc' || a === 'ftccopy' || a === 'ftcopen') {
     const k = S.cases[S.sel]; if (!k) return; const ui = (S.ui.ftc ||= {})[k.mid] ||= {}, rec = recOf(k.mid), m = rec && rec.chat && rec.chat.ftc, d = (m && m.draft) || ui.draft;
@@ -1473,7 +1542,10 @@ document.addEventListener('click', (ev) => {
       if (all && !ui.logged) { ui.logged = true; caseNote(k, 'Copied the FTC report to file with the member', true); }
       return; }
   }
-  else if (a === 'shot') { const inp = $('#shotin'); if (inp) inp.click(); return; }
+  else if (a === 'shot') { S.ui.shotPick = true; S.ui.footMin = false; }
+  else if (a === 'shotclose') S.ui.shotPick = false;
+  else if (a === 'shotfile') { S.ui.shotPick = false; render(); const inp = $('#shotin'); if (inp) inp.click(); return; }
+  else if (a === 'shotpick') { S.ui.shotPick = false; pickDemoShot(S.chat, t.dataset.f); }
   else if (a === 'askshot') { const k = S.cases[S.sel], rec = k && recOf(k.mid), ch = rec && rec.chat; if (!ch) return; offerShot(ch, ch.human ? 'emp' : 'bot');
     caseNote(k, 'Asked the member for a screenshot'); mirror('out', 'Could you send a screenshot of the message you received?', true, ch, ch.human ? 'employee' : 'script'); }
   else if (a === 'ftcm') { if (S.chat && S.chat.ftc && S.chat.ftc.step === 'offer') memberFtcChoose(S.chat, t.dataset.v); }

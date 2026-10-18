@@ -66,7 +66,7 @@ async function analyze({ image, mime }) {
   let j, error = null, raw = null;
   try {
     const r = await fetch(agent.OLLAMA + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
-      body: JSON.stringify({ model: cfg.visionModel, stream: false, keep_alive: '30m', format: SCHEMA, options: { temperature: 0, num_predict: 700 },
+      body: JSON.stringify({ model: cfg.visionModel, stream: false, keep_alive: '30m', format: SCHEMA, options: { temperature: 0, num_predict: 700, num_ctx: agent.NUM_CTX },
         messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: 'What does this screenshot show?', images: [image] }] }) });
     const out = await r.json(); if (!r.ok) throw new Error('vision model ' + r.status + ' ' + JSON.stringify(out).slice(0, 120));
     raw = out.message && out.message.content; j = agent.extractJSON(raw || '');
