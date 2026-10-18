@@ -232,7 +232,7 @@ function liveCtx(c) {
 async function sendLive(text) {
   const ch = S.chat, L = ch && ch.live; text = (text || '').trim().slice(0, 600);
   if (!L || !text || L.pending || ch.outcome) return;
-  ch.msgs.push({ f: 'me', h: esc(text) }); ch.answers.push({ q: 'live', a: text }); L.hist.push({ role: 'user', content: text }); L.pending = true; render();
+  S.voice.draft = ''; ch.msgs.push({ f: 'me', h: esc(text) }); ch.answers.push({ q: 'live', a: text }); L.hist.push({ role: 'user', content: text }); L.pending = true; render();
   try {
     const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), S.live.timeout);
     const r = await fetch(API + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ctx: liveCtx(ch.c), messages: L.hist }), signal: ctl.signal });
@@ -319,10 +319,10 @@ function phoneHTML() {
   const msgs = ch.msgs.map((m) => { const cls = m.seen ? '' : ' fresh'; m.seen = true; return `<div class="msg ${m.f}${cls}">${m.h}</div>`; }).join('')
     + (ch.typing || (L && L.pending) ? '<div class="msg bot typing" role="status" aria-label="Harbor is typing"><span></span><span></span><span></span></div>' : '');
   const chips = busy ? '' : (L ? liveChips(ch) : n ? n.choices : []).map((x, i) => `<button class="choice" data-act="choose" data-i="${i}">${esc(x.t)}</button>`).join('');
-  const box = L && !L.trusted ? `<form class="livebox" data-act="liveform"><textarea id="livein" rows="2" maxlength="600" placeholder="Type what's going on, in your own words" aria-label="Message to Harbor" ${busy ? 'disabled' : ''}></textarea><button class="btn sm" type="submit" ${busy ? 'disabled' : ''}>Send</button></form>` : '';
+  const box = L && !L.trusted ? `<form class="livebox" data-act="liveform"><textarea id="livein" rows="2" maxlength="600" placeholder="Type what's going on, in your own words" aria-label="Message to Harbor" ${busy ? 'disabled' : ''}>${esc(S.voice.draft || '')}</textarea><button class="btn sm" type="submit" ${busy ? 'disabled' : ''}>Send</button></form>` : '';
   const footKey = [ch.cur, ch.msgs.length, ch.outcome || '', busy ? 'b' : 'r', L ? L.hist.length : ''].join('|');
   const footCls = ch.footKey === footKey ? '' : ' fresh'; ch.footKey = footKey;
-  const foot = o ? `<button class="btn alt block" data-act="reset">Replay this scenario</button>` : box + chips + `<button class="btn ghost sm" data-act="person">Talk to a person</button>`;
+  const foot = o ? `<button class="btn alt block" data-act="reset">Replay this scenario</button>` : micHTML(busy) + box + chips + `<button class="btn ghost sm" data-act="person">Talk to a person</button>`;
   const oc = o ? `<div class="outcome ${o.tone}${ch.outcomeSeen ? '' : ' fresh'}"><b>${o.title}</b><br>${o.text}</div>` : ''; if (o) ch.outcomeSeen = true;
   return { html: `${bar('Harbor · security analyst')}<div class="body" id="chatbody">${msgs}${oc}</div><div class="foot${footCls}">${foot}</div>` };
 }
@@ -335,8 +335,80 @@ function understandingHTML(L) {
     <p class="small" style="margin:6px 0"><b>Handoff note:</b> ${esc(L.note || '(after the first reply)')}</p>
     <p class="small muted" style="margin:0">The model reads the words and extracts signals. <b>Code</b> decides the buttons: ${L.signals.relative_pressure ? 'someone close may be pressuring the member, so the trusted-contact button is hidden and a private conversation with Sound is offered first.' : red ? 'a red-flag signal is present, so "This looks fine, continue" is hidden.' : 'with no red flags, "continue" appears only after the member says they verified or decided on their own.'} The model can never release, cancel or hold a payment.</p></div>`;
 }
+/* ---------- speech to text (Web Speech API) + text size for older members ---------- */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+S.voice = { supported: !!SR && window.self === window.top, framed: window.self !== window.top, on: false, interim: '', final: '', draft: '', err: null };
+try { S.textSize = localStorage.getItem('harbor-textsize') === 'xl' ? 'xl' : 'large'; } catch (e) { S.textSize = 'large'; }
+let rec = null;
+const SYN = [   // spoken words -> the option they mean
+  [/\b(house|home|car|vehicle|truck|closing|mortgage|down ?payment|title company|buying|bought|purchase)\b/, 'home or vehicle'],
+  [/\b(family|grand ?(son|daughter|child|kids?)|son|daughter|nephew|niece|relative|jail|bail|accident|hospital)\b/, 'family member'],
+  [/\b(online|internet|dating|boyfriend|girlfriend|crypto|invest\w*|never met)\b/, 'met online'],
+  [/\b(police|fbi|irs|federal|government|bank|officer|agent|detective|investigat\w*|told me to)\b/, 'told me to move money'],
+  [/\b(contractor|landlord|rent|roof|repair\w*|plumber|business|lease)\b/, 'contractor'],
+  [/\b(own account|my account|brokerage|savings|myself)\b/, 'own account'],
+  [/\b(something else|other|don'?t know|do not know|no idea)\b/, 'something else'],
+];
+/** Which option did the person mean? Returns an index into `labels`, or -1 when nothing fits well enough. */
+function matchChip(text, labels) {
+  const said = ' ' + text.toLowerCase().replace(/[^a-z' ]/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+  const L = labels.map((l) => l.toLowerCase());
+  const score = L.map(() => 0);
+  const yes = /^ (yes|yeah|yep|yup|correct|sure|that was me|i did|i have|i verified)\b/.test(said), no = /^ (no|nope|nah|not really|that wasn'?t me)\b/.test(said), unsure = /\b(not sure|don'?t know|do not know|no idea|dunno|unsure|maybe)\b/.test(said);
+  L.forEach((l, i) => {
+    if (unsure && /not sure|not exactly|something else/.test(l)) score[i] += 6;
+    else if (yes && /^yes/.test(l)) score[i] += 6;
+    else if (no && /^no\b/.test(l)) score[i] += 6;
+    for (const [re, key] of SYN) if (re.test(said) && l.includes(key)) score[i] += 4;
+    for (const w of said.split(' ')) if (w.length > 3 && l.includes(w)) score[i] += 1;
+  });
+  const best = Math.max(...score);
+  const top = score.filter((x) => x === best).length;
+  return best >= 3 && top === 1 ? score.indexOf(best) : -1;     // a tie means we are not sure: ask them to say it again
+}
+const VOICE_ERR = { 'not-allowed': 'Please allow the microphone in your browser, then tap again.', 'service-not-allowed': 'Please allow the microphone in your browser, then tap again.', 'no-speech': "I didn't hear anything. Tap and try again.", 'audio-capture': 'I could not find a microphone.', network: 'Voice needs an internet connection. You can type instead.' };
+function startVoice() {
+  if (!SR || !S.chat || S.chat.outcome) return;
+  stopVoice();
+  rec = new SR(); rec.lang = navigator.language || 'en-US'; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
+  rec.onstart = () => { S.voice.on = true; S.voice.interim = ''; S.voice.final = ''; S.voice.err = null; render(); };
+  rec.onresult = (e) => {
+    let t = ''; for (const r of e.results) t += r[0].transcript;
+    S.voice.interim = t; if (e.results[e.results.length - 1].isFinal) S.voice.final = t;
+    const h = document.getElementById('hear'); if (h) h.textContent = t;          // no re-render while listening
+  };
+  rec.onerror = (e) => { S.voice.err = e.error; S.voice.on = false; render(); };
+  rec.onend = () => { S.voice.on = false; const t = (S.voice.final || S.voice.interim || '').trim(); rec = null; if (t) onSpoken(t); else render(); };
+  try { rec.start(); } catch (e) { S.voice.err = 'audio-capture'; render(); }
+}
+function stopVoice(finish) { try { if (rec) { finish ? rec.stop() : rec.abort(); } } catch (e) { /* already stopped */ } if (!finish) { rec = null; S.voice.on = false; } }
+function onSpoken(text) {
+  const ch = S.chat; if (!ch || ch.outcome) return render();
+  if (/\b(talk to (a |an |some)?(person|human|someone|employee)|speak (to|with) (a |an |some)?(person|human|someone|employee)|real person|a human|call me)\b/i.test(text)) {
+    ch.msgs.push({ f: 'me', h: 'Talk to a person' }); ch.answers.push({ q: 'person', a: 'Talk to a person' }); finish('human'); return render();
+  }
+  if (ch.live) {                                                                  // Live AI: put the words in the box to check, then Send
+    S.voice.draft = text; S.voice.err = null; render();
+    setTimeout(() => { const ta = document.getElementById('livein'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } }, 0);
+    return;
+  }
+  const n = node(ch.cur, ch.c), idx = matchChip(text, n.choices.map((x) => x.t));   // guided: pick the option they meant
+  ch.msgs.push({ f: 'sys', h: 'I heard: “' + esc(text) + '”' });
+  if (idx < 0) { ch.msgs.push({ f: 'bot', h: 'Sorry, I didn\'t catch which one you meant. Please tap an option below, or say it again.' }); return render(); }
+  choose(idx); render();
+}
+function micHTML(busy) {
+  const ch = S.chat; if (!ch || ch.outcome) return '';
+  if (!S.voice.supported) return '<p class="small micnote">' + (SR && S.voice.framed ? 'The microphone is switched off inside this preview. Open the prototype in its own browser tab to talk to Harbor, or tap an option.' : 'Talking to Harbor works in Chrome and Safari. You can tap or type instead.') + '</p>';
+  if (busy) return '';
+  const on = S.voice.on;
+  const hint = S.voice.err ? (VOICE_ERR[S.voice.err] || 'Voice stopped. Tap to try again, or type instead.') : on ? (S.voice.interim || 'Go ahead, I\'m listening…') : (ch.live ? 'Tap, speak, then check the words and tap Send.' : 'Tap and say it in your own words.');
+  return `<button type="button" class="mic${on ? ' on' : ''}" data-act="mic" aria-pressed="${on}"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path></svg><span>${on ? 'Listening… tap to stop' : 'Tap to speak'}</span></button><div class="hear" id="hear" aria-live="polite">${esc(hint)}</div>`;
+}
+window.HarborVoice = { matchChip };
+
 /* ---------- collapsible panels + model log dashboards ---------- */
-S.ui = { saw: true, log: true, raw: {} };
+S.ui = { demoOpen: false, saw: true, log: true, raw: {} };
 S.log = { rows: [], err: null };
 function coll(k, title, body, badge) {
   const open = S.ui[k];
@@ -411,21 +483,25 @@ function memberHTML() {
   const rules = dec.rules.length ? dec.rules.map((r) => `<div class="why"><b>${esc(r.label)}</b><br>${esc(r.reason)}</div>`).join('') : `<div class="why" style="border-color:var(--green);background:var(--green-soft)">${noFlagExplain(sc.mid, dec)}</div>`;
   const sup = dec.suppress.length ? dec.suppress.map((s) => `<div class="why" style="border-color:var(--green);background:var(--green-soft)"><b>Why this is probably you:</b> ${esc(s)}</div>`).join('') : '';
   const ph = phoneHTML();
-  return `<div class="grid-member"><section aria-label="Scenarios"><h2>Pick a story</h2><p class="muted small">Anchor personas and legitimate look-alikes from the synthetic data.</p>${list}</section>
-    <section aria-label="Member phone"><div class="phone">${ph.html}</div></section>
+  const demoBody = `<div class="pop-col">
+      <h3 style="margin-top:0">Pick a story</h3><p class="muted small" style="margin:0 0 10px">Anchor personas and legitimate look-alikes from the synthetic data.</p><div class="story-grid">${list}</div></div>
+      <div class="pop-col">
+      <h3 style="margin-top:0">Settings</h3>
+      <div class="small" role="radiogroup" aria-label="Harbor agent mode"><label><input type="radio" name="mode" data-act="mode" value="scripted" ${S.live.mode === 'scripted' ? 'checked' : ''}> Guided script</label>
+        &nbsp; <label><input type="radio" name="mode" data-act="mode" value="live" ${S.live.mode === 'live' ? 'checked' : ''} ${S.live.avail ? '' : 'disabled'}> Live AI ${S.live.avail ? '<span class="chip ' + (S.live.provider === 'mock' ? 'amber' : 'green') + '">' + esc(S.live.provider === 'mock' ? 'mock test double' : S.live.provider + ' · ' + S.live.model) + '</span>' : '<span class="muted">(run <code>node harbor/server.js</code> with an API key)</span>'}</label></div>
+      <div class="small" role="radiogroup" aria-label="Text size in the chat and notification" style="margin-top:8px">Text size in the chat and notification: <label><input type="radio" name="ts" data-act="tsize" value="large" ${S.textSize === 'large' ? 'checked' : ''}> Large</label>
+        &nbsp; <label><input type="radio" name="ts" data-act="tsize" value="xl" ${S.textSize === 'xl' ? 'checked' : ''}> Extra large</label></div>
+      <div class="actions">
+        <button class="btn alt sm" data-act="reset">Restart</button>
+        ${S.chat && !S.chat.outcome && S.phone.step === 'chat' ? '<button class="btn alt sm" data-act="timeout">Simulate no response (10 min)</button>' : ''}
+        ${sc.id === 'closing' ? `<label class="small"><input type="checkbox" data-act="planned" ${S.planned ? 'checked' : ''}> Member declared a Planned Big Payment in advance</label>` : ''}
+      </div></div>`;
+  return `<div class="grid-member"><section aria-label="Member phone"><div class="demo-wrap"><button type="button" class="demo-btn" data-act="demo" aria-expanded="${S.ui.demoOpen}" aria-haspopup="dialog"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"></path><circle cx="16" cy="7" r="2"></circle><circle cx="8" cy="17" r="2"></circle></svg><b>Demo controls</b><span class="chip grey">${esc(sc.name)}</span><span class="chip ${S.live.mode === 'live' ? 'green' : 'grey'}">${S.live.mode === 'live' ? 'Live AI' : 'Guided'}</span><svg class="chev ${S.ui.demoOpen ? 'open' : ''}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>${S.ui.demoOpen ? `<div class="pop-backdrop"><div class="pop" role="dialog" aria-modal="true" aria-label="Demo controls"><div class="pop-h"><b>Demo controls</b><span class="chip grey">${esc(sc.name)}</span><span class="chip ${S.live.mode === 'live' ? 'green' : 'grey'}">${S.live.mode === 'live' ? 'Live AI' : 'Guided'}</span><button type="button" class="pop-x" data-act="demo" aria-label="Close demo controls">Close ×</button></div><div class="pop-b">${demoBody}</div></div></div>` : ''}</div><div class="phone${S.textSize === 'xl' ? ' xl' : ''}${S.phone.step === 'chat' ? ' is-chat' : S.phone.step === 'lock' ? ' is-lock' : ''}">${ph.html}</div></section>
     <section aria-label="What Harbor saw">
       ${coll('saw', esc(sc.name) + ' · ' + esc(sc.tag), `<p class="muted small"><b>Ground truth, hidden from Harbor:</b> ${esc(m.summary)}<br>Outcome in the data: <b>${esc(m.outcome)}</b>${m.loss ? ' · net loss ' + money(m.loss) : ''}</p>
       <h3>What Harbor saw (event stream)</h3>${timelineHTML(sc.mid, dec, sc.id === 'michael' ? 14 : 9)}
       <h3>Harbor's decision at payment start ${levelChip(dec.level)}</h3>${rules}${sup}
       ${S.chat && S.chat.live ? understandingHTML(S.chat.live) : ''}
-      <h3>Demo controls</h3>
-      <div class="small" role="radiogroup" aria-label="Harbor agent mode"><label><input type="radio" name="mode" data-act="mode" value="scripted" ${S.live.mode === 'scripted' ? 'checked' : ''}> Guided script</label>
-        &nbsp; <label><input type="radio" name="mode" data-act="mode" value="live" ${S.live.mode === 'live' ? 'checked' : ''} ${S.live.avail ? '' : 'disabled'}> Live AI ${S.live.avail ? '<span class="chip ' + (S.live.provider === 'mock' ? 'amber' : 'green') + '">' + esc(S.live.provider === 'mock' ? 'mock test double' : S.live.provider + ' · ' + S.live.model) + '</span>' : '<span class="muted">(run <code>node harbor/server.js</code> with an API key)</span>'}</label></div>
-      <div class="actions">
-        <button class="btn alt sm" data-act="reset">Restart</button>
-        ${S.chat && !S.chat.outcome && S.phone.step === 'chat' ? '<button class="btn alt sm" data-act="timeout">Simulate no response (10 min)</button>' : ''}
-        ${sc.id === 'closing' ? `<label class="small"><input type="checkbox" data-act="planned" ${S.planned ? 'checked' : ''}> Member declared a Planned Big Payment in advance</label>` : ''}
-      </div>
       ${c.ato ? '<p class="small muted">Takeover path: Harbor texts the number on file <b>before</b> the change, never the attacker\'s session, and never asks for credentials or codes.</p>' : ''}`)}
       ${coll('log', 'Model log for this conversation', logHTML(), logBadge())}
     </section></div>`;
@@ -445,13 +521,22 @@ function seedCases() {
 }
 function consoleHTML() {
   seedCases();
-  const ids = Object.keys(S.cases);
-  if (!S.sel || !S.cases[S.sel]) S.sel = ids[0];
+  // The console follows the demo: only the story picked in Demo controls is shown.
+  const sc = SCENARIOS.find((x) => x.id === S.sc), ids = Object.keys(S.cases).filter((id) => id === sc.mid);
+  if (!ids.length) {
+    const dec = scenarioDecision(sc);
+    return `<div class="console"><section><h2>Held payments</h2><p class="muted small">Following the demo: <b>${esc(sc.name)} · ${esc(sc.tag)}</b>. Change the story in Demo controls (Member app tab).</p></section>
+      <section class="card"><h2>${esc(sc.name)} · ${esc(sc.tag)} <span class="chip grey">${esc(sc.mid)}</span></h2>
+      <p><span class="chip green">No case</span> ${dec.level === 'none' ? 'Harbor let this payment through, so there is nothing for staff to review.' : 'Harbor asked a light question and released the payment, so no case was opened.'}</p>
+      ${dec.level === 'none' ? `<p class="small muted">${noFlagExplain(sc.mid, dec)}</p>` : ''}
+      <p class="small muted">That is the point for this story: a legitimate member goes through without a hold or a phone call. Finish the chat in the Member app to see how it ends.</p></section></div>`;
+  }
+  S.sel = ids[0];
   const list = ids.map((id) => { const k = S.cases[id]; return `<button class="case" data-act="case" data-id="${id}" aria-pressed="${id === S.sel}"><b>${esc(k.who)} · ${money(k.dec.amt)} ${esc(k.dec.rail)}<span class="small muted">${esc(k.updated)}</span></b><span class="chip ${k.key && ['cancelled', 'release_light'].includes(k.key) ? 'green' : 'warn'}">${esc(k.status)}</span></button>`; }).join('');
   const k = S.cases[S.sel], isRamp = k.dec.rules.some((r) => r.id === 'RAMP'), isAto = k.dec.rules.some((r) => r.id === 'ATO');
   const coach = (isAto ? COACH.ATO : isRamp ? COACH.RAMP : COACH.GENERAL).map((q) => `<li>${esc(q)}</li>`).join('');
   const chat = k.answers.length ? k.answers.map((a) => `<li>${esc(a.a)}</li>`).join('') : '<li class="muted">No reply yet</li>';
-  return `<div class="console"><section><h2>Held payments</h2><p class="muted small">Cases appear when Harbor pauses a payment. Finish a story in the Member app to see its case update here.</p>${list}</section>
+  return `<div class="console"><section><h2>Held payments</h2><p class="muted small">Following the demo: <b>${esc(sc.name)} · ${esc(sc.tag)}</b>. Change the story in Demo controls (Member app tab). Finish the chat to see the case update here.</p>${list}</section>
     <section class="card"><h2>${esc(k.who)} · ${esc(k.tag)} <span class="chip grey">${esc(k.mid)}</span></h2>
       <p><b>${money(k.dec.amt)}</b> ${esc(railWord(k.dec.rail))} · ${esc(k.dec.rs === 'New' ? 'new recipient' : 'existing recipient')} · status: <b>${esc(k.status)}</b></p>
       <h3>Why Harbor paused</h3>${k.dec.rules.map((r) => `<div class="why"><b>${esc(r.label)}</b><br>${esc(r.reason)}</div>`).join('')}
@@ -733,22 +818,31 @@ function render() {
   const bd = $('#badge'); bd.hidden = !S.unread; bd.textContent = S.unread;
   $('#view').innerHTML = { member: memberHTML, console: consoleHTML, trigger: triggerHTML, sim: simHTML, arch: archHTML, pipe: pipeHTML, notes: notesHTML }[S.tab]();
   const cb = $('#chatbody'); if (cb) cb.scrollTop = cb.scrollHeight;
+  document.body.classList.toggle('modal-open', !!S.ui.demoOpen);
+  if (S.ui.demoOpen && !S.ui.popFocused) { S.ui.popFocused = true; const x = document.querySelector('.pop-x'); if (x) x.focus(); }
+  if (!S.ui.demoOpen) S.ui.popFocused = false;
 }
-function reset() { S.phone = { step: 'review' }; S.chat = null; S.log.rows = []; }
+function reset() { stopVoice(); S.voice.draft = ''; S.voice.err = null; S.phone = { step: 'review' }; S.chat = null; S.log.rows = []; }
+document.addEventListener('click', (ev) => {
+  if (S.ui.demoOpen && !ev.target.closest('.pop, .demo-btn')) { S.ui.demoOpen = false; render(); }
+}, true);
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && S.ui.demoOpen) { S.ui.demoOpen = false; render(); const b = document.querySelector('.demo-btn'); if (b) b.focus(); } });
 document.addEventListener('click', (ev) => {
   const t = ev.target.closest('[data-act],[data-tab]'); if (!t) return;
   if (t.dataset.tab) { S.tab = t.dataset.tab; if (S.tab === 'console') S.unread = 0; if (S.tab === 'pipe') pipeStart(); return render(); }
   const a = t.dataset.act;
-  if (a === 'scn') { S.sc = t.dataset.id; reset(); }
+  if (a === 'scn') { S.sc = t.dataset.id; S.ui.demoOpen = false; reset(); }
   else if (a === 'send') { const d = scenarioDecision(SCENARIOS.find((s) => s.id === S.sc)); S.phone = { step: d.level === 'none' ? 'sent' : d.level === 'hold' ? 'paused' : 'chat' }; if (S.phone.step === 'chat') startChat(); }
   else if (a === 'notify') S.phone = { step: 'lock' };
   else if (a === 'open') { S.phone = { step: 'chat' }; startChat(); }
   else if (a === 'choose') choose(+t.dataset.i);
   else if (a === 'person') { S.chat.msgs.push({ f: 'me', h: 'Talk to a person' }); S.chat.answers.push({ q: 'person', a: 'Talk to a person' }); finish('human'); }
   else if (a === 'timeout') finish('timeout');
+  else if (a === 'mic') { S.voice.on ? stopVoice(true) : startVoice(); return; }
+  else if (a === 'demo') S.ui.demoOpen = !S.ui.demoOpen;
   else if (a === 'coll') { S.ui[t.dataset.k] = !S.ui[t.dataset.k]; if (t.dataset.k === 'log' && S.ui.log) refreshLog(); }
   else if (a === 'rawt') S.ui.raw[t.dataset.id] = !S.ui.raw[t.dataset.id];
-  else if (a === 'reset') reset();
+  else if (a === 'reset') { S.ui.demoOpen = false; reset(); }
   else if (a === 'case') S.sel = t.dataset.id;
   else if (a === 'cact') { const k = S.cases[S.sel]; k.log.push(t.dataset.v); k.status = t.dataset.v.split(';')[0]; k.updated = 'Just now'; }
   else if (a === 'sim') S.sim.selId = t.dataset.id;
@@ -763,13 +857,15 @@ document.addEventListener('change', (ev) => {
   if (a === 'planned') { S.planned = t.checked; reset(); }
   else if (a === 'plannedAll') S.sim.plannedAll = t.checked;
   else if (a === 'mode') { S.live.mode = t.value; reset(); }
+  else if (a === 'tsize') { S.textSize = t.value === 'xl' ? 'xl' : 'large'; try { localStorage.setItem('harbor-textsize', S.textSize); } catch (e) { /* storage blocked */ } }
   else if (a === 'trigmember') S.trig.id = t.value;
   else if (a === 'filter') S.sim.filter = t.value;
   else return;
   render();
 });
 document.addEventListener('input', (ev) => {
-  const t = ev.target; if (t.dataset.act !== 'slider') return;
+  const t = ev.target; if (t.id === 'livein') { S.voice.draft = t.value; return; }
+  if (t.dataset.act !== 'slider') return;
   S.sim.cfg[t.dataset.k] = +t.value; const pos = document.activeElement === t; render();
   if (pos) { const n = document.querySelector(`[data-k="${t.dataset.k}"]`); if (n) n.focus(); }
 });

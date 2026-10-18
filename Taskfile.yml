@@ -84,4 +84,5 @@ tasks:
     desc: Refresh docs/ (the GitHub Pages build) from harbor/.
     cmds:
       - for f in style.css theme.js app.js engine.js data.js snapshot.js; do cp harbor/$f docs/$f; done
+      - mkdir -p docs/assets && cp harbor/assets/* docs/assets/
       - echo "docs/ refreshed. Commit and push to publish."
