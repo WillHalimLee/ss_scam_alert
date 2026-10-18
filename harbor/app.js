@@ -19,10 +19,13 @@ const SCENARIOS = [
 ];
 const PLANS = { M1057: [{ rail: 'Wire', amount: 51587, label: 'Home closing wire, declared Oct 12' }] };
 
-const S = { tab: 'member', sc: 'sarah', planned: false, phone: { step: 'review' }, chat: null, cases: {}, sel: null,
+const S = { tab: 'member', sc: 'sarah', planned: false, rec: {}, cases: {}, sel: null,
   sim: { cfg: Object.assign({}, E.DEFAULTS), plannedAll: false, filter: 'all', selId: null }, unread: 0,
-  live: { mode: 'scripted', avail: false, provider: '', model: '', timeout: 9000, backend: false }, trig: { id: 'sarah' },
-  be: { phase: 'idle', mid: null, total: 0, done: 0, trigger: null, view: null, err: '', tok: 0 } };
+  live: { mode: 'scripted', avail: false, provider: '', model: '', timeout: 9000, backend: false }, trig: { id: 'sarah' }
+};
+/** Each story keeps its own phone, chat and pipeline state, so switching stories never resets anyone: only Reset does. */
+const R = (id = S.sc) => (S.rec[id] ||= { id, mid: SCENARIOS.find((x) => x.id === id).mid, phone: { step: 'review' }, chat: null, be: { phase: 'idle', total: 0, done: 0, trigger: null, view: null, err: '' } });
+for (const k of ['phone', 'chat', 'be']) Object.defineProperty(S, k, { get: () => R()[k], set: (v) => { R()[k] = v; } });
 const API = location.protocol === 'file:' ? 'http://localhost:8787' : '';
 const RED = ['authority_pressure', 'secrecy_or_isolation', 'unmet_online_contact', 'growing_amounts', 'unusual_method', 'member_denies_changes', 'relative_pressure', 'credential_shared'];
 const SIGNAL_LABEL = { authority_pressure: 'Someone claiming authority', secrecy_or_isolation: 'Told to keep it secret', urgency: 'Urgency', unverified_contact: 'Not independently verified',
@@ -40,50 +43,55 @@ async function checkLive() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const post = (u, b) => fetch(API + u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) }).then((r) => { if (!r.ok) throw new Error('http ' + r.status); return r.json(); });
 const getState = (mid, ev) => fetch(API + '/api/demo/state?member=' + mid + (ev ? '&event=' + ev : '')).then((r) => r.json());
-const caseId = () => (S.live.backend && S.be.view && S.be.view.case ? S.be.view.case.case_id : null);
+const caseId = (ch = S.chat) => (S.live.backend && ch && ch.cid) || null;
 const openingText = () => { const v = S.be.view; const m = v && v.messages && v.messages.find((x) => x.direction === 'out'); return m ? m.body : null; };
-function mirror(dir, text, force) {                                        // scripted chat -> the real case (stored, not delivered)
-  const cid = caseId(); if (!cid || !text || (S.chat && S.chat.live && !force)) return;
+function mirror(dir, text, force, ch = S.chat) {                           // scripted chat -> the real case (stored, not delivered)
+  const cid = caseId(ch); if (!cid || !text || (ch.live && !force)) return;
   post('/api/cases/' + cid + '/log', { direction: dir, text, source: 'script' }).catch(() => {});
 }
-async function beginStory() {
+async function beginStory(rec = R()) {
   if (!S.live.backend) return;
-  const sc = SCENARIOS.find((x) => x.id === S.sc), tok = S.be.tok + 1;
-  S.be = { phase: 'loading', mid: sc.mid, total: 0, done: 0, trigger: null, view: null, err: '', tok }; render();
+  const be = rec.be = { phase: 'loading', total: 0, done: 0, trigger: null, view: null, err: '' };
+  render();
   try {
-    const j = await post('/api/demo/start', { member: sc.mid, planned: S.planned ? PLANS[sc.mid] : undefined });
-    if (S.be.tok !== tok) return;
-    S.be.total = j.historyTotal; S.be.trigger = j.triggerEventId;
+    const j = await post('/api/demo/start', { member: rec.mid, planned: S.planned ? PLANS[rec.mid] : undefined });
+    if (be.dead) return;
+    be.total = j.historyTotal; be.trigger = j.triggerEventId;
     for (let i = 0; i < 100; i++) {
-      const v = await getState(sc.mid); if (S.be.tok !== tok) return;
-      S.be.done = Math.min(v.processed, j.historyTotal); render();
+      const v = await getState(rec.mid); if (be.dead) return;
+      be.done = Math.min(v.processed, j.historyTotal); render();
       if (v.processed >= j.historyTotal) break; await sleep(400);
     }
-    S.be.phase = 'ready';
-  } catch (e) { if (S.be.tok !== tok) return; S.be.phase = 'error'; S.be.err = e.message; }
+    be.phase = 'ready';
+  } catch (e) { if (be.dead) return; be.phase = 'error'; be.err = e.message; }
   render();
 }
 async function sendPayment() {
-  const sc = SCENARIOS.find((x) => x.id === S.sc), tok = S.be.tok; S.phone = { step: 'sending' }; render();
+  const rec = R(), be = rec.be, sc = SCENARIOS.find((x) => x.id === rec.id); rec.phone = { step: 'sending' }; render();
   let level = null;
   try {
-    await post('/api/demo/send', { member: sc.mid, event: S.be.trigger });
+    await post('/api/demo/send', { member: rec.mid, event: be.trigger });
     for (let i = 0; i < 70; i++) {                                          // wait for the decision and, if it alerts, the opening message (the model has a few seconds)
-      await sleep(350); const v = await getState(sc.mid, S.be.trigger);
-      if (S.be.tok !== tok || S.phone.step !== 'sending') return;
-      S.be.view = v; level = v.decision && v.decision.level;
+      await sleep(350); const v = await getState(rec.mid, be.trigger);
+      if (be.dead || rec.phone.step !== 'sending') return;
+      be.view = v; level = v.decision && v.decision.level;
       if (level === 'none' || (level && v.messages.some((m) => m.direction === 'out'))) break;
     }
-  } catch (e) { S.be.err = e.message; }
-  if (!level) { level = scenarioDecision(sc).level; S.be.view = null; }     // pipeline did not answer: fall back to the local engine
-  S.be.phase = 'decided';
-  S.phone = { step: level === 'none' ? 'sent' : level === 'hold' ? 'paused' : 'chat' }; if (S.phone.step === 'chat') startChat();
+  } catch (e) { be.err = e.message; }
+  if (be.dead) return;
+  if (!level) { level = scenarioDecision(sc).level; be.view = null; }       // pipeline did not answer: fall back to the local engine
+  be.phase = 'decided';
+  rec.phone = { step: level === 'none' ? 'sent' : level === 'hold' ? 'paused' : 'chat' }; if (rec.phone.step === 'chat') startChat(rec);
   render();
 }
-setInterval(async () => {                                                    // keep the console in step with what the pipeline stored
-  if (!S.live.backend || S.be.phase !== 'decided' || !S.be.trigger || !S.be.mid) return;
-  const tok = S.be.tok;
-  try { const v = await getState(S.be.mid, S.be.trigger); if (S.be.tok !== tok) return; const old = JSON.stringify(S.be.view); S.be.view = v; if (S.tab === 'console' && JSON.stringify(v) !== old) render(); } catch (e) { /* offline */ }
+setInterval(async () => {                                                    // keep every story's case in step with what the pipeline stored
+  if (!S.live.backend) return;
+  let changed = false;
+  for (const rec of Object.values(S.rec)) {
+    const be = rec.be; if (be.phase !== 'decided' || !be.trigger) continue;
+    try { const v = await getState(rec.mid, be.trigger); if (be.dead) continue; const old = JSON.stringify(be.view); be.view = v; if (JSON.stringify(v) !== old) changed = true; } catch (e) { /* offline */ }
+  }
+  if (changed && S.tab === 'console') render();
 }, 2000);
 
 /* ---------- scenario decision ---------- */
@@ -225,18 +233,18 @@ const OUTCOMES = {
   timeout: { tone: 'amber', title: 'No reply: a person will reach out', text: 'No response after 10 minutes, so a Sound employee starts outreach. Wires and cash stay held. P2P stays held until staff have tried to reach the member.', status: 'No response: employee outreach started', hold: 'held pending outreach' },
 };
 
-function startChat() {
-  const sc = SCENARIOS.find((s) => s.id === S.sc), dec = scenarioDecision(sc), c = ctxOf(sc, dec);
+function startChat(rec = R()) {
+  const sc = SCENARIOS.find((s) => s.id === rec.id), dec = scenarioDecision(sc), c = ctxOf(sc, dec);
   const first = c.ato ? 'ato0' : c.planned ? 'planned' : dec.level === 'confirm' ? 'light' : 'start';
-  S.chat = { c, msgs: [], queue: [], typing: false, draining: false, answers: [], path: [], outcome: null, startedAt: Date.now() };
+  const ch = rec.chat = { c, cid: rec.be.view && rec.be.view.case ? rec.be.view.case.case_id : null, msgs: [], queue: [], typing: false, draining: false, answers: [], path: [], outcome: null, startedAt: Date.now() };
   S.log.rows = [];
-  if (S.live.mode === 'live' && S.live.avail) S.chat.live = { hist: [], signals: {}, state: 'calm', note: '', pending: false, trusted: false, provider: S.live.provider };
-  const open = openingText();
-  if (open) { S.chat.msgs.push({ f: 'bot', h: esc(open) }); S.chat.skipFirst = true; }   // the pipeline already composed and stored the first message
-  pushNode(first);
+  if (S.live.mode === 'live' && S.live.avail) ch.live = { hist: [], signals: {}, state: 'calm', note: '', pending: false, trusted: false, provider: S.live.provider };
+  const v = rec.be.view, om = v && v.messages && v.messages.find((x) => x.direction === 'out'), open = om ? om.body : null;
+  if (open) { ch.msgs.push({ f: 'bot', h: esc(open) }); ch.skipFirst = true; }   // the pipeline already composed and stored the first message
+  pushNode(first, ch);
 }
-function pushNode(id) {
-  const ch = S.chat, n = node(id, ch.c);
+function pushNode(id, ch = S.chat) {
+  const n = node(id, ch.c);
   ch.path.push(id); ch.cur = id;
   for (const b of n.bot) { if (ch.skipFirst && typeof b === 'string') { ch.skipFirst = false; continue; } ch.queue.push(typeof b === 'string' ? { f: 'bot', h: b } : { f: 'sys', h: b.sys }); }
   drain(ch);
@@ -247,13 +255,13 @@ function drain(ch) {
   ch.draining = true;
   const calm = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
   const step = () => {
-    if (S.chat !== ch) return;                                            // the scenario was restarted
+    if (ch.dead) return;                                                  // the scenario was reset
     if (!ch.queue.length) { ch.typing = false; ch.draining = false; render(); return; }
     ch.typing = true; render();
     const wait = calm ? 150 : 700 + Math.min(1200, ch.queue[0].h.replace(/<[^>]+>/g, '').length * 12);   // about 1-2 s per message
     setTimeout(() => {
-      if (S.chat !== ch || !ch.queue.length) return;                      // member took over meanwhile
-      const nm = ch.queue.shift(); ch.msgs.push(nm); if (nm.f === 'bot') mirror('out', stripHTML(nm.h)); ch.typing = false; render();
+      if (ch.dead || !ch.queue.length) return;                            // member took over meanwhile
+      const nm = ch.queue.shift(); ch.msgs.push(nm); if (nm.f === 'bot') mirror('out', stripHTML(nm.h), false, ch); ch.typing = false; render();
       setTimeout(step, calm ? 0 : 650);                                         // a beat; longer than the ease-in, so it is never cut short
     }, wait);
   };
@@ -289,18 +297,18 @@ async function sendLive(text) {
   S.voice.draft = ''; ch.msgs.push({ f: 'me', h: esc(text) }); ch.answers.push({ q: 'live', a: text }); L.hist.push({ role: 'user', content: text }); L.pending = true; render();
   try {
     const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), S.live.timeout);
-    const cid = caseId();
+    const cid = caseId(ch);
     const r = cid ? await fetch(API + '/api/cases/' + cid + '/reply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), signal: ctl.signal })
       : await fetch(API + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ctx: liveCtx(ch.c), messages: L.hist }), signal: ctl.signal });
     clearTimeout(to); if (!r.ok) throw new Error('http ' + r.status);
-    const j = await r.json(); if (S.chat !== ch || ch.outcome) return;
+    const j = await r.json(); if (ch.dead || ch.outcome) return;
     L.hist.push({ role: 'assistant', content: j.reply }); ch.msgs.push({ f: 'bot', h: esc(j.reply) });
     for (const k in j.signals) if (j.signals[k]) L.signals[k] = true;
     Object.assign(L, { state: j.member_state, note: j.handoff_note, guarded: j.guarded, provider: j.provider, pending: false });
   } catch (e) {
-    if (S.chat !== ch || ch.outcome) return;
+    if (ch.dead || ch.outcome) return;
     ch.msgs.push({ f: 'sys', h: 'The live assistant is unavailable, so I\'m switching to a few guided questions.' });
-    ch.live = null; pushNode(ch.c.ato ? 'fallback_ato' : 'fallback');
+    ch.live = null; pushNode(ch.c.ato ? 'fallback_ato' : 'fallback', ch);
   }
   render();
   refreshLog();
@@ -335,7 +343,7 @@ function finish(key) {
   if (L) { summary.live = true; summary.signals = Object.keys(L.signals).filter((k) => L.signals[k]); summary.note = L.note; summary.state = L.state;
     summary.log.splice(summary.log.length - 1, 0, 'Harbor\'s read (' + L.provider + '): ' + (summary.signals.map((k) => SIGNAL_LABEL[k]).join(', ') || 'no risk signals') + (L.note ? '. Note: ' + L.note : '')); }
   S.cases[ch.c.sc.mid] = summary; if (!prev) S.unread++;
-  const cid = caseId(); if (cid) post('/api/cases/' + cid + '/resolve', { outcome: key }).catch(() => {});
+  const cid = caseId(ch); if (cid) post('/api/cases/' + cid + '/resolve', { outcome: key }).catch(() => {});
 }
 
 /* ---------- member view ---------- */
@@ -553,7 +561,7 @@ function memberHTML() {
         &nbsp; <label><input type="radio" name="ts" data-act="tsize" value="xl" ${S.textSize === 'xl' ? 'checked' : ''}> Extra large</label></div>
       ${S.live.backend ? `<p class="small" style="margin:10px 0 0"><span class="chip ${S.be.phase === 'error' ? 'red' : 'green'}">Live pipeline</span> ${S.be.phase === 'loading' ? 'streaming ' + S.be.done + '/' + (S.be.total || '?') + ' events into Kafka…' : S.be.phase === 'error' ? esc(S.be.err) : 'events go app → Kafka → scorer → Postgres → agent'}</p>` : ''}
       <div class="actions">
-        <button class="btn alt sm" data-act="reset">Restart</button>
+        <button class="btn alt sm" data-act="reset">Reset this story</button><button class="btn alt sm" data-act="resetall">Reset all</button>
         ${S.chat && !S.chat.outcome && S.phone.step === 'chat' ? '<button class="btn alt sm" data-act="timeout">Simulate no response (10 min)</button>' : ''}
         ${sc.id === 'closing' ? `<label class="small"><input type="checkbox" data-act="planned" ${S.planned ? 'checked' : ''}> Member declared a Planned Big Payment in advance</label>` : ''}
       </div></div>`;
@@ -591,8 +599,9 @@ function headline(k) {
 const STAGE = { paused: 1, notified: 2, chat: 3, done: 4 };
 const stageOf = (k) => STAGE[k.stage] || 1;
 function statusChip(c) { const ok = (c.key && ['cancelled', 'release_light'].includes(c.key)) || /released|cancelled/i.test(c.status); return `<span class="chip ${ok ? 'green' : 'warn'}">${esc(c.status)}</span>`; }
-function syncCase() {
-  const sc = SCENARIOS.find((s) => s.id === S.sc), mid = sc.mid, p = S.phone.step, ch = S.chat;
+function syncCase() { for (const rec of Object.values(S.rec)) syncOne(rec); }
+function syncOne(rec) {
+  const sc = SCENARIOS.find((s) => s.id === rec.id), mid = sc.mid, p = rec.phone.step, ch = rec.chat;
   if (p === 'review' || p === 'sending') { delete S.cases[mid]; return; }                         // the payment has not been sent in the demo yet: nothing is held
   const dec = scenarioDecision(sc); if (dec.level !== 'hold') return;           // pass-throughs and light checks only get a case when their chat ends
   let k = S.cases[mid];
@@ -604,7 +613,7 @@ function syncCase() {
     k.status = 'In conversation'; k.msgs = ch.msgs.filter((m) => m.f === 'bot' || m.f === 'me').map((m) => ({ f: m.f, t: stripHTML(m.h) })); k.answers = ch.answers.slice();
     if (ch.live) { k.live = true; k.signals = Object.keys(ch.live.signals).filter((x) => ch.live.signals[x]); k.note = ch.live.note; k.state = ch.live.state; }
   }
-  const v = S.live.backend && S.be.view; if (v && v.member_id === mid) { k.real = v; const o = v.messages.find((m) => m.direction === 'out'); if (o && stageOf(k) < 3) k.msgs = [{ f: 'bot', t: o.body }]; }
+  const v = S.live.backend && rec.be.view; if (v && v.member_id === mid) { k.real = v; const o = v.messages.find((m) => m.direction === 'out'); if (o && stageOf(k) < 3) k.msgs = [{ f: 'bot', t: o.body }]; }
 }
 function stateLine(k) {
   if (k.key && OUTCOMES[k.key]) return OUTCOMES[k.key].status + '.';
@@ -674,24 +683,24 @@ function txnHTML(k) {
     <div class="txn-side"><div class="k">To</div>${to}</div></div>
     <dl class="facts">${facts.map(([a, b]) => `<div><dt>${a}</dt><dd>${b}</dd></div>`).join('')}</dl>`;
 }
+const notSentYet = (sc) => { const r = S.rec[sc.id]; return !r || r.phone.step === 'review' || r.phone.step === 'sending'; };
 function qListHTML() {
   const q = (S.ui.qText || '').trim().toLowerCase();
-  const ids = Object.keys(S.cases).filter((id) => { const c = S.cases[id], f = c.dec.rules[0]; return !q || [memberName(id), id, money(c.dec.amt), c.dec.rail, f && TRIGGER[f.id], c.status].join(' ').toLowerCase().includes(q); });
-  if (!Object.keys(S.cases).length) return '<p class="muted small" style="padding:12px 14px;margin:0">Nothing is held yet. Run a story in the Member app and press Send payment.</p>';
-  if (!ids.length) return `<p class="muted small" style="padding:12px 14px;margin:0">No held payment matches “${esc(S.ui.qText)}”.</p>`;
-  return ids.map((id) => { const c = S.cases[id], f = c.dec.rules[0];
-    return `<button type="button" class="qitem" role="option" data-act="qpick" data-id="${id}" aria-selected="${id === S.sel}"><b>${esc(memberName(id))}</b><span class="small muted">${esc(id)}</span><span>${money(c.dec.amt)} ${esc(c.dec.rail)}</span>${f ? `<span class="chip grey">${esc(TRIGGER[f.id] || f.id)}</span>` : ''}${statusChip(c)}</button>`; }).join('');
+  const rows = SCENARIOS.map((sc) => ({ sc, k: S.cases[sc.mid], dec: scenarioDecision(sc) })).filter(({ sc, k, dec }) => { const f = (k || { dec }).dec.rules[0];
+    return !q || [memberName(sc.mid), sc.mid, sc.name, sc.tag, money(dec.amt), dec.rail, f && TRIGGER[f.id], k ? k.status : notSentYet(sc) ? 'not sent yet' : 'no held payment'].join(' ').toLowerCase().includes(q); });
+  if (!rows.length) return `<p class="muted small" style="padding:12px 14px;margin:0">No member matches “${esc(S.ui.qText)}”.</p>`;
+  return rows.map(({ sc, k, dec }) => { const f = (k || { dec }).dec.rules[0];
+    return `<button type="button" class="qitem" role="option" data-act="qpick" data-id="${sc.mid}" aria-selected="${sc.mid === S.sel}"><b>${esc(memberName(sc.mid))}</b><span class="small muted">${esc(sc.mid)}</span><span>${money(dec.amt)} ${esc(dec.rail)}</span>${f && k ? `<span class="chip grey">${esc(TRIGGER[f.id] || f.id)}</span>` : ''}${k ? statusChip(k) : notSentYet(sc) ? '<span class="chip grey">Not sent yet</span>' : '<span class="chip green">No held payment</span>'}</button>`; }).join('');
 }
 function consoleHTML() {
-  const sc = SCENARIOS.find((x) => x.id === S.sc), ids = Object.keys(S.cases);
-  const selId = S.sel && (S.cases[S.sel] || S.sel === sc.mid) ? S.sel : sc.mid;
+  const selId = SCENARIOS.some((x) => x.mid === S.sel) ? S.sel : SCENARIOS.find((x) => x.id === S.sc).mid, sc = SCENARIOS.find((x) => x.mid === selId), ids = Object.keys(S.cases), notSent = notSentYet(sc);
   const k = S.cases[selId];
   const chipFor = statusChip;
   S.sel = selId;
   const first = (c) => c.dec.rules[0], trig = (c) => (first(c) ? `<span class="chip grey">${esc(TRIGGER[first(c).id] || first(c).id)}</span>` : '');
   const cur = S.cases[selId], at = ids.indexOf(selId);
   const label = cur ? `<b>${esc(memberName(selId))}</b> <span class="small muted">${esc(selId)}</span><span>${money(cur.dec.amt)} ${esc(cur.dec.rail)}</span>${trig(cur)}${chipFor(cur)}`
-    : `<b>${esc(memberName(sc.mid))}</b> <span class="small muted">${esc(sc.mid)}</span>${scenarioDecision(sc).level === 'hold' && S.phone.step === 'review' ? '<span class="chip warn">Payment not sent yet</span>' : '<span class="chip green">No held payment</span>'}`;
+    : `<b>${esc(memberName(sc.mid))}</b> <span class="small muted">${esc(sc.mid)}</span>${notSent ? '<span class="chip grey">Not sent yet</span>' : '<span class="chip green">No held payment</span>'}`;
   const queue = `<section class="card qbox"><div class="qrowbar">
     <div class="qfield">${S.ui.qOpen ? `<input id="qsearch" type="search" autocomplete="off" aria-label="Search held payments" placeholder="Search by name, amount, method, rule or status…" value="${esc(S.ui.qText)}"><div class="qlist" id="qlist" role="listbox">${qListHTML()}</div>`
       : `<button type="button" class="qcur" data-act="qopen" aria-haspopup="listbox" aria-expanded="false">${label}<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>`}</div>
@@ -699,7 +708,7 @@ function consoleHTML() {
   if (!k) {
     const dec = scenarioDecision(sc);
     return `<div class="console2">${queue}<section class="card"><h2>${esc(sc.name)} · ${esc(sc.tag)} <span class="chip grey">${esc(sc.mid)}</span></h2>
-      ${dec.level === 'hold' && S.phone.step === 'review' ? `<p><span class="chip warn">Not sent yet</span> The payment in this story has not been sent. When you press <b>Send payment</b> on the phone in the Member app, Harbor evaluates it and the held payment appears here, filling in as the demo goes.</p>` : ''}${dec.level === 'hold' && S.phone.step === 'review' ? '' : `<p><span class="chip green">No case</span> ${dec.level === 'none' ? 'Harbor let this payment through, so there is nothing for staff to review.' : 'Harbor asked a light question and released the payment, so no case was opened.'}</p>
+      ${notSent ? `<p><span class="chip grey">Not sent yet</span> The payment in this story has not been sent. Pick this story in the Member app's Demo controls and press <b>Send payment</b>: Harbor evaluates it and the held payment appears here, filling in as the demo goes.</p>` : ''}${notSent ? '' : `<p><span class="chip green">No case</span> ${dec.level === 'none' ? 'Harbor let this payment through, so there is nothing for staff to review.' : 'Harbor asked a light question and released the payment, so no case was opened.'}</p>
       ${dec.level === 'none' ? `<p class="small muted">${noFlagExplain(sc.mid, dec)}</p>` : ''}<p class="small muted">That is the point for this story: a legitimate member goes through without a hold or a phone call.</p>`}</section></div>`;
   }
   S.sel = selId;
@@ -1000,7 +1009,13 @@ function render() {
   if (S.ui.demoOpen && !S.ui.popFocused) { S.ui.popFocused = true; const x = document.querySelector('.pop-x'); if (x) x.focus(); }
   if (!S.ui.demoOpen) S.ui.popFocused = false;
 }
-function reset() { stopVoice(); S.voice.draft = ''; S.voice.err = null; S.phone = { step: 'review' }; S.chat = null; S.log.rows = []; S.be.view = null; if (S.live.backend) setTimeout(beginStory, 0); }
+function resetStory(id = S.sc) {                                           // only an explicit Reset (or a changed setting) starts a story over
+  const rec = S.rec[id]; stopVoice(); S.voice.draft = ''; S.voice.err = null;
+  if (rec) { rec.be.dead = true; if (rec.chat) rec.chat.dead = true; delete S.cases[rec.mid]; delete S.rec[id]; }
+  S.log.rows = [];
+}
+function showStory(id) { stopVoice(); S.voice.draft = ''; S.sc = id; S.sel = SCENARIOS.find((x) => x.id === id).mid; S.log.rows = []; if (S.live.backend && !S.rec[id]) beginStory(R()); }
+function resetAll() { for (const id of Object.keys(S.rec)) resetStory(id); S.cases = {}; S.unread = 0; if (S.live.backend) beginStory(R()); }
 document.addEventListener('click', (ev) => {
   if (S.ui.demoOpen && !ev.target.closest('.pop, .demo-btn')) { S.ui.demoOpen = false; render(); }
   if (S.ui.qOpen && !ev.target.closest('.qfield')) { S.ui.qOpen = false; render(); }
@@ -1017,7 +1032,7 @@ document.addEventListener('click', (ev) => {
   const t = ev.target.closest('[data-act],[data-tab]'); if (!t) return;
   if (t.dataset.tab) { S.tab = t.dataset.tab; if (S.tab === 'console') S.unread = 0; if (S.tab === 'pipe') pipeStart(); return render(); }
   const a = t.dataset.act;
-  if (a === 'scn') { S.sc = t.dataset.id; S.sel = SCENARIOS.find((x) => x.id === t.dataset.id).mid; S.ui.demoOpen = false; reset(); }
+  if (a === 'scn') { S.ui.demoOpen = false; showStory(t.dataset.id); }
   else if (a === 'send' && S.live.backend && S.be.phase === 'ready') { sendPayment(); return; }
   else if (a === 'send' && S.live.backend) return;
   else if (a === 'send') { const d = scenarioDecision(SCENARIOS.find((s) => s.id === S.sc)); S.phone = { step: d.level === 'none' ? 'sent' : d.level === 'hold' ? 'paused' : 'chat' }; if (S.phone.step === 'chat') startChat(); }
@@ -1033,8 +1048,9 @@ document.addEventListener('click', (ev) => {
   else if (a === 'qpick') { S.sel = t.dataset.id; S.ui.qOpen = false; S.ui.qText = ''; }
   else if (a === 'coll') { S.ui[t.dataset.k] = !S.ui[t.dataset.k]; if (t.dataset.k === 'log' && S.ui.log) refreshLog(); }
   else if (a === 'rawt') S.ui.raw[t.dataset.id] = !S.ui.raw[t.dataset.id];
-  else if (a === 'reset') { S.ui.demoOpen = false; reset(); }
-  else if (a === 'cact') { const k = S.cases[S.sel]; if (S.sel === S.be.mid && caseId()) post('/api/cases/' + caseId() + '/action', { text: t.dataset.v }).catch(() => {}); k.log.push(t.dataset.v); k.status = t.dataset.v.split(';')[0]; k.updated = 'Just now'; }
+  else if (a === 'reset') { S.ui.demoOpen = false; resetStory(); if (S.live.backend) beginStory(R()); }
+  else if (a === 'resetall') { S.ui.demoOpen = false; resetAll(); }
+  else if (a === 'cact') { const k = S.cases[S.sel]; { const r = Object.values(S.rec).find((x) => x.mid === S.sel), cid = S.live.backend && r && r.be.view && r.be.view.case && r.be.view.case.case_id; if (cid) post('/api/cases/' + cid + '/action', { text: t.dataset.v }).catch(() => {}); } k.log.push(t.dataset.v); k.status = t.dataset.v.split(';')[0]; k.updated = 'Just now'; }
   else if (a === 'sim') S.sim.selId = t.dataset.id;
   else if (a === 'pcase') { S.pipe.sel = t.dataset.id; pipeFetch(); }
   else if (a === 'preply') { pipeReply(); return; }
@@ -1044,9 +1060,9 @@ document.addEventListener('click', (ev) => {
 });
 document.addEventListener('change', (ev) => {
   const t = ev.target, a = t.dataset.act;
-  if (a === 'planned') { S.planned = t.checked; reset(); }
+  if (a === 'planned') { S.planned = t.checked; resetStory(); if (S.live.backend) beginStory(R()); }
   else if (a === 'plannedAll') S.sim.plannedAll = t.checked;
-  else if (a === 'mode') { S.live.mode = t.value; S.live.chosen = true; reset(); }
+  else if (a === 'mode') { S.live.mode = t.value; S.live.chosen = true; }   // applies to the next chat; nothing is reset
   else if (a === 'tsize') { S.textSize = t.value === 'xl' ? 'xl' : 'large'; try { localStorage.setItem('harbor-textsize', S.textSize); } catch (e) { /* storage blocked */ } }
   else if (a === 'trigmember') S.trig.id = t.value;
   else if (a === 'filter') S.sim.filter = t.value;
