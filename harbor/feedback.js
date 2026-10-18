@@ -32,4 +32,4 @@ const store = (name) => {
     list(n = 200) { try { return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).slice(-n).reverse(); } catch { return []; } },
   };
 };
-module.exports = { clean, cleanEvents, VERDICTS, EVENTS, fileStore: store('feedback'), eventStore: store('interactions'), DIR };
+module.exports = { clean, cleanEvents, VERDICTS, EVENTS, store, fileStore: store('feedback'), eventStore: store('interactions'), DIR };

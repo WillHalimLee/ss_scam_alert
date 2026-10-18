@@ -408,9 +408,9 @@ function chosen(ch, label, index, of, how) {
 
 /* ---------- feedback: member and employee each rate 1-5, stored with the conversation for later analysis ---------- */
 const transcript = (msgs) => msgs.filter((m) => m.f !== 'sys').map((m) => ({ who: m.f === 'me' ? 'member' : m.f === 'emp' ? 'employee' : 'harbor', text: m.t != null ? m.t : stripHTML(m.h) }));
-function sendFeedback(fb, body) {
+function sendFeedback(fb, body, onSaved) {
   fb.busy = true; fb.err = ''; render();
-  post('/api/feedback', body).then(() => { fb.sent = true; }).catch((e) => { fb.err = /404/.test(e.message) ? 'Could not save: the server is running older code. Restart it (Ctrl+C, then task run) and try again.' : 'Could not save. Feedback needs the local server (task run or task chat).'; })
+  post('/api/feedback', body).then(() => { fb.sent = true; if (onSaved) onSaved(); }).catch((e) => { fb.err = /404/.test(e.message) ? 'Could not save: the server is running older code. Restart it (Ctrl+C, then task run) and try again.' : 'Could not save. Feedback needs the local server (task run or task chat).'; })
     .finally(() => { fb.busy = false; render(); });
 }
 function memberFeedback(ch) {
@@ -427,7 +427,8 @@ function caseSnapshot(k) {
 function employeeFeedback(k, kind) {
   const fb = kind === 'verdict' ? k.vfb : k.efb, rec = recOf(k.mid), real = k.real && k.real.case;
   sendFeedback(fb, { source: 'employee', kind, score: fb.score, comment: fb.text, case_id: (real && real.case_id) || (rec && rec.chat ? caseId(rec.chat) : null), member_id: k.mid, outcome: k.key,
-    mode: k.live ? 'live' : 'guided', context: Object.assign(caseSnapshot(k), kind === 'verdict' ? { loss: +fb.loss || 0, recovered: +fb.recovered || 0 } : {}) });
+    mode: k.live ? 'live' : 'guided', context: Object.assign(caseSnapshot(k), kind === 'verdict' ? { loss: +fb.loss || 0, recovered: +fb.recovered || 0 } : {}) },
+    kind === 'verdict' && fb.score === 1 ? () => startMemberFtc(k) : null);           // a confirmed scam: Harbor offers to help the member report it
 }
 function memberFbHTML(ch) {
   const fb = ch.fb ||= {};
@@ -461,39 +462,85 @@ function verdictHTML(k) {
   return `<section class="card efb"><h2>Close-out: was it a scam?</h2>${body}</section>${ftcHTML(k)}`;
 }
 
-/* ---------- FTC report: once the employee confirms a scam, Harbor drafts the report from what it learned. The employee files it
-   with the member on reportfraud.ftc.gov (or IdentityTheft.gov for a takeover). Nothing is sent automatically: there is no official
-   API, the report belongs to the member and needs their consent, and demo data is synthetic. ---------- */
-function ftcReport(k) {
-  const d = k.dec, sg = new Set(k.signals || []), ids = d.rules.map((r) => r.id), ev = txnEvent(k), said = (k.msgs || []).filter((m) => m.f === 'me').map((m) => m.t);
-  const ato = ids.includes('ATO');
-  const category = ato ? 'Identity theft: someone took over the account (file at IdentityTheft.gov)'
-    : sg.has('authority_pressure') ? 'An impersonator (someone claiming to be a government agency, a business, a lawyer or a family member)'
-    : sg.has('unmet_online_contact') || sg.has('growing_amounts') ? 'Romance or investment: someone met online asked for money'
-    : sg.has('relative_pressure') ? 'Something else: pressure from someone close to the member'
-    : 'Something else (describe below)';
-  const contact = ato ? 'A text claiming to be from the credit union, then the account was taken over' : sg.has('authority_pressure') ? 'Phone call from someone claiming authority'
-    : sg.has('unmet_online_contact') ? 'Online (dating site, app or social media)' : 'Not known yet: ask the member';
-  const loss = +(k.vfb && k.vfb.loss) || 0, rec = +(k.vfb && k.vfb.recovered) || 0;
-  const story = [ato ? `The password, email and phone number on the member's account were changed, then a ${money(d.amt)} ${railWord(d.rail)} to a new recipient was started.` : `The member started a ${money(d.amt)} ${railWord(d.rail)}${d.rs === 'New' ? ' to a new recipient' : ''}.`,
-    `Sound Credit Union paused it for a safety check on ${fmt(d.t)}.`, said.length ? `In the member's words: "${said.slice(0, 3).join('" / "')}".` : '', k.note ? `Staff note: ${k.note}` : '',
-    loss ? `Money lost: ${money(loss)}${rec ? `, recovered: ${money(rec)}` : ''}.` : 'No money was lost.'].filter(Boolean).join(' ');
-  return { site: ato ? 'https://www.identitytheft.gov/' : 'https://reportfraud.ftc.gov/', siteName: ato ? 'IdentityTheft.gov' : 'reportfraud.ftc.gov', fields: [
-    ['What happened (category)', category], ['How it started', contact], ['Payment method', railWord(d.rail).replace(/^./, (m) => m.toUpperCase())], ['Amount involved', money(d.amt)],
-    ['Amount lost', money(loss)], ['Date', fmt(d.t)], ['Paid to', d.rail === 'Cash' ? 'Cash handed over in person' : (ev.rid || 'Recipient') + ' (account details on file at Sound)'],
-    ['Description', story], ['Member contact details', 'Fill in with the member: name, address, phone, email'] ] };
+/* ---------- FTC report: once an employee confirms a scam, Harbor asks the member how they want to report it. If they want help it
+   asks only what the case does not already answer, then the agent drafts the report (POST /api/ftc/draft) for an employee to review
+   and file with the member on reportfraud.ftc.gov (IdentityTheft.gov for a takeover). Nothing is submitted automatically: there is
+   no official API, the report belongs to the member, and demo data is synthetic. ---------- */
+function ftcFacts(k) {
+  const d = k.dec, ev = txnEvent(k), said = (k.msgs || []).filter((m) => m.f === 'me').map((m) => m.t);
+  return { member_id: k.mid, ato: d.rules.some((r) => r.id === 'ATO'), amount: money(d.amt), method: railWord(d.rail), date: fmt(d.t), date_iso: new Date(d.t).toISOString(), recipient_new: d.rs === 'New',
+    paid_to: d.rail === 'Cash' ? 'cash handed over in person' : (ev.rid || 'the recipient') + ' (account details on file at Sound)',
+    loss: +(k.vfb && k.vfb.loss) ? money(+k.vfb.loss) : null, recovered: +(k.vfb && k.vfb.recovered) ? money(+k.vfb.recovered) : null, signals: k.signals || [], member_said: said.slice(0, 6) };
 }
+const ftcCaseId = (k) => { const real = k.real && k.real.case, rec = recOf(k.mid); return (real && real.case_id) || (rec && rec.chat ? caseId(rec.chat) : null); };
+const ftcDraft = (k, choice, answers) => post('/api/ftc/draft', { case_id: ftcCaseId(k), member_id: k.mid, choice, facts: ftcFacts(k), answers: answers || {} });
+const FTC_CHOICES = [['assisted', 'Help me report it'], ['self', 'I\'ll report it myself'], ['later', 'Not now']];
+/** The member's follow-up in the chat, after the employee records "Confirmed scam". */
+function startMemberFtc(k) {
+  const rec = recOf(k.mid), ch = rec && rec.chat; if (!ch || ch.ftc) return;
+  ch.ftc = { step: 'offer', from: ch.msgs.length, answers: {}, qs: [], i: 0, k };
+  ch.ftc.ready = post('/api/ftc/questions', { facts: ftcFacts(k) }).then((j) => { ch.ftc.qs = j.questions || []; ch.ftc.known = j.known || {}; }).catch(() => { ch.ftc.offline = true; });
+  const who = memberName(k.mid);
+  ch.queue.push({ f: 'bot', h: `${who.startsWith('Member') ? 'I' : esc(who) + ', I'}'m sorry. A Sound employee has confirmed this was a scam. You did the right thing by talking to us.` },
+    { f: 'bot', h: 'Reporting it to the FTC helps stop the people behind it. Would you like us to help you file a report, or would you rather do it yourself?' });
+  drain(ch);
+}
+function memberFtcChoose(ch, choice) {
+  const f = ch.ftc, k = f.k, label = FTC_CHOICES.find((c) => c[0] === choice)[1];
+  f.choice = choice; ch.msgs.push({ f: 'me', h: esc(label) }); mirror('in', label, true, ch); track('chose', ch, { label, node: 'ftc_offer', how: 'tap' });
+  if (choice === 'later') { f.step = 'done'; ch.queue.push({ f: 'bot', h: 'No problem. If you change your mind, you can report it any time at <a href="https://reportfraud.ftc.gov/" target="_blank" rel="noopener noreferrer">reportfraud.ftc.gov</a>, or ask us to help.' }); drain(ch); return; }
+  if (choice === 'self') { f.step = 'drafting'; ftcDraft(k, 'self', {}).then((d) => { f.draft = d; f.step = 'done';
+      ch.queue.push({ f: 'bot', h: `Here's where to report it: <a href="${d.site.url}" target="_blank" rel="noopener noreferrer">${esc(d.site.name)}</a>. It takes about 10 minutes. Here's a short summary you can paste into the form:` },
+        { f: 'bot', h: `<span class="ftcsum">${esc(d.story)}</span><button type="button" class="linkbtn" data-act="ftcmcopy">Copy summary</button>` }); drain(ch); })
+    .catch(() => { f.step = 'done'; ch.queue.push({ f: 'bot', h: 'You can report it at <a href="https://reportfraud.ftc.gov/" target="_blank" rel="noopener noreferrer">reportfraud.ftc.gov</a>. It takes about 10 minutes.' }); drain(ch); }); render(); return; }
+  f.step = 'drafting'; render();                                                // wait for the questions (only what the case does not answer)
+  f.ready.then(() => {
+    if (f.offline) { f.step = 'done'; ch.queue.push({ f: 'bot', h: 'Thank you. A Sound employee will contact you to file it together.' }); drain(ch); return; }
+    if (f.qs.length) ch.queue.push({ f: 'bot', h: 'Thank you. I just need a few details we don\'t have yet. You can skip anything you\'re not sure about.' });
+    askNextFtc(ch); render();
+  });
+}
+function askNextFtc(ch) {
+  const f = ch.ftc, applies = (q) => !q.when || Object.entries(q.when).every(([k, v]) => (f.answers[k] || (f.known || {})[k]) === v);
+  while (f.qs[f.i] && !applies(f.qs[f.i])) f.i++;                             // e.g. "which app?" only after "social media"
+  const q = f.qs[f.i];
+  if (q) { f.step = 'ask'; ch.queue.push({ f: 'bot', h: esc(q.q) }); drain(ch); return; }
+  f.step = 'drafting'; ch.queue.push({ f: 'bot', h: 'Thank you. I\'m putting the report together now.' }); drain(ch);
+  ftcDraft(f.k, 'assisted', f.answers).then((d) => { f.draft = d; f.step = 'done'; const ui = (S.ui.ftc ||= {})[f.k.mid] ||= {}; ui.consent = true;
+    ch.queue.push({ f: 'bot', h: 'Done. A Sound employee will go over the report with you and file it with the FTC. You don\'t need to do anything else right now.' }); drain(ch);
+    empPing('📝 ' + memberName(f.k.mid) + ' asked for help reporting to the FTC: the draft is ready to review', f.k.mid, 15000); })
+    .catch(() => { f.step = 'done'; ch.queue.push({ f: 'bot', h: 'Thank you. A Sound employee will contact you to finish the report together.' }); drain(ch); });
+}
+function memberFtcAnswer(ch, text) {
+  const f = ch.ftc, q = f.qs[f.i]; text = (text || '').trim().slice(0, 300); if (!q || !text) return;
+  f.answers[q.id] = text; f.i++; ch.msgs.push({ f: 'me', h: esc(text) }); mirror('in', text, true, ch); track('chose', ch, { label: text.slice(0, 80), node: 'ftc:' + q.id, how: 'answer' });
+  askNextFtc(ch); render();
+}
+function ftcFootHTML(ch) {
+  const f = ch.ftc; if (ch.typing || ch.queue.length || f.step === 'drafting') return '';
+  if (f.step === 'offer') return FTC_CHOICES.map(([v, l]) => `<button class="choice" data-act="ftcm" data-v="${v}">${esc(l)}</button>`).join('');
+  const q = f.qs[f.i]; if (f.step !== 'ask' || !q) return '';
+  return `<form class="livebox" data-act="ftcform"><textarea id="ftcin" rows="2" maxlength="300" placeholder="Type your answer" aria-label="Your answer"></textarea><button class="btn sm" type="submit">Send</button></form>`
+    + q.chips.map((c, i) => `<button class="choice" data-act="ftcans" data-i="${i}">${esc(c)}</button>`).join('');
+}
+/** Employee side: the member's choice, the agent's draft section by section, copy and file with the member. */
 function ftcHTML(k) {
   const v = k.vfb; if (!v || !v.sent || v.score !== 1) return '';                       // only after the employee confirms a scam
-  const ui = (S.ui.ftc ||= {})[k.mid] ||= {}, r = ftcReport(k);
-  if (!ui.open) return `<section class="card efb"><h2>Report to the FTC</h2><p class="small muted" style="margin:0 0 8px">Harbor drafts the report from this case. You file it with the member.</p><button type="button" class="btn sm block" data-act="ftc">📝 Prepare FTC report</button></section>`;
-  const rows = r.fields.map(([label, val], i) => `<div class="ftcf"><div class="ftcl">${esc(label)}</div><div class="ftcv">${esc(val)}</div><button type="button" class="linkbtn" data-act="ftccopy" data-i="${i}" ${ui.consent ? '' : 'disabled'}>Copy</button></div>`).join('');
-  return `<section class="card efb ftc"><h2>Report to the FTC</h2>
+  const rec = recOf(k.mid), m = rec && rec.chat && rec.chat.ftc, ui = (S.ui.ftc ||= {})[k.mid] ||= {}, d = (m && m.draft) || ui.draft;
+  const status = !m ? '' : m.choice === 'assisted' ? (d ? '🙋 The member asked us to help. Review the draft and file it with them.' : '⏳ Harbor is asking the member a few questions…')
+    : m.choice === 'self' ? '🔗 The member will file it themselves. Harbor sent the link and a summary.' : m.choice === 'later' ? '⏸ The member chose not now. Harbor sent the link for later.' : '⏳ Harbor asked the member how they want to report it.';
+  const head = `<h2>Report to the FTC</h2>${status ? `<p class="small ftcstatus">${status}</p>` : ''}`;
+  if (!d) return `<section class="card efb ftc">${head}${m ? '' : '<p class="small muted" style="margin:0 0 8px">The member is not in the chat. You can draft it from the case and file it with them.</p>'}
+    <button type="button" class="btn ${m ? 'alt ' : ''}sm block" data-act="ftc" ${ui.busy ? 'disabled' : ''}>${ui.busy ? 'Drafting…' : '📝 Draft it now'}</button>${ui.err ? `<p class="small" style="color:var(--red)">${esc(ui.err)}</p>` : ''}</section>`;
+  const consent = ui.consent || (m && m.choice === 'assisted');
+  const rows = d.sections.map(([sec, fields], si) => `<div class="ftcs"><div class="ftcsh">${esc(sec)}</div>${fields.map(([label, val], j) => `<div class="ftcf"><div class="ftcl">${esc(label)}</div><div class="ftcv">${esc(val)}</div><button type="button" class="linkbtn" data-act="ftccopy" data-i="${si}.${j}" ${consent ? '' : 'disabled'}>Copy</button></div>`).join('')}</div>`).join('');
+  return `<section class="card efb ftc">${head}
     <p class="ftcwarn">⚠️ Demo data is synthetic. Do not submit it.</p>
-    <label class="small ftcok"><input type="checkbox" data-act="ftcconsent" ${ui.consent ? 'checked' : ''}> The member agreed to report this (file it with them, or give them this draft)</label>
+    <p class="small muted" style="margin:0 0 8px">Story and category written by ${d.source === 'llm' ? esc(d.model) : 'the template' + (d.reason ? ' (' + esc(d.reason) + ')' : '')}; facts filled in by code. Sections follow ${esc(d.site.name)}.</p>
+    ${m && m.choice === 'assisted' ? '<p class="small ftcok">✔ The member asked us to help in the chat.</p>' : `<label class="small ftcok"><input type="checkbox" data-act="ftcconsent" ${consent ? 'checked' : ''}> The member agreed to report this (file it with them, or give them this draft)</label>`}
     ${rows}
-    <div class="ftcbtns"><button type="button" class="btn alt sm" data-act="ftccopy" data-i="all" ${ui.consent ? '' : 'disabled'}>Copy all</button>
-      ${ui.consent ? `<a class="btn sm" href="${r.site}" target="_blank" rel="noopener noreferrer" data-act="ftcopen">Open ${esc(r.siteName)} ↗</a>` : `<span class="btn sm" aria-disabled="true">Open ${esc(r.siteName)} ↗</span>`}</div>
+    <div class="ftcbtns"><button type="button" class="btn alt sm" data-act="ftccopy" data-i="all" ${consent ? '' : 'disabled'}>Copy all</button>
+      ${consent ? `<a class="btn sm" href="${d.site.url}" target="_blank" rel="noopener noreferrer" data-act="ftcopen">Open ${esc(d.site.name)} ↗</a>` : `<span class="btn sm" aria-disabled="true">Open ${esc(d.site.name)} ↗</span>`}</div>
     ${ui.copied ? `<p class="small" style="margin:6px 0 0;color:var(--green)">${esc(ui.copied)}</p>` : ''}</section>`;
 }
 function copyText(text) {
@@ -540,8 +587,10 @@ function phoneHTML() {
   // chat
   const ch = S.chat, n = ch.outcome ? null : node(ch.cur, ch.c), o = ch.outcome && OUTCOMES[ch.outcome], L = ch.live;
   const busy = ch.typing || ch.queue.length > 0 || !!(L && L.pending);
-  const msgs = ch.msgs.map((m) => { const cls = m.seen ? '' : ' fresh'; m.seen = true; return m.f === 'emp' ? `<div class="msg bot emp${cls}"><span class="who">Sound team member</span>${m.h}</div>` : `<div class="msg ${m.f}${cls}">${m.h}</div>`; }).join('')
-    + (ch.typing || (L && L.pending) ? '<div class="msg bot typing" role="status" aria-label="Harbor is typing"><span></span><span></span><span></span></div>' : '');
+  const m2h = (m) => { const cls = m.seen ? '' : ' fresh'; m.seen = true; return m.f === 'emp' ? `<div class="msg bot emp${cls}"><span class="who">Sound team member</span>${m.h}</div>` : `<div class="msg ${m.f}${cls}">${m.h}</div>`; };
+  const split = ch.ftc ? ch.ftc.from : ch.msgs.length;                       // the FTC follow-up comes after the outcome card
+  const typingDots = ch.typing || (L && L.pending) || (ch.ftc && ch.ftc.step === 'drafting') ? '<div class="msg bot typing" role="status" aria-label="Harbor is typing"><span></span><span></span><span></span></div>' : '';
+  const msgs = ch.msgs.slice(0, split).map(m2h).join(''), after = ch.msgs.slice(split).map(m2h).join('');
   const opts = busy || ch.human ? [] : L ? liveChips(ch) : n ? n.choices : [];
   if (opts.length) { const key = opts.map((x) => x.t).join('|'); if (ch.offKey !== key) { ch.offKey = key; ch.offAt = Date.now(); track('offered', ch, { options: opts.map((x) => x.t), node: L ? 'live' : ch.cur }); } }
   const chips = opts.map((x, i) => `<button class="choice" data-act="choose" data-i="${i}">${esc(x.t)}</button>`).join('');
@@ -553,9 +602,9 @@ function phoneHTML() {
   const min = !!S.ui.footMin && !o;
   const reply = mic.hint + (hasBox ? box : busy ? '' : mic.btn) + chips + (ch.human || opts.some((x) => x.end === 'human') ? '' : `<button class="btn ghost sm" data-act="person">Talk to a person</button>`);
   const collapsed = `<div class="cmin"><button type="button" class="cmin-pill" data-act="expand" aria-expanded="false" aria-label="Show the reply panel"><span>${hasBox ? (ch.human ? 'Reply to the Sound team member…' : 'Reply to Harbor…') : 'Choose an answer…'}</span>${opts.length ? `<small>${opts.length} suggested ${opts.length === 1 ? 'answer' : 'answers'}</small>` : ''}</button>${S.voice.supported && !busy ? `<button type="button" class="mic" data-act="mic" aria-label="Tap to speak" title="Tap to speak"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path></svg></button>` : ''}</div>`;
-  const foot = o ? memberFbHTML(ch) + `<button class="btn alt block" data-act="reset">Replay this scenario</button>` : min ? collapsed : reply;
+  const foot = o ? (ch.ftc && ch.ftc.step !== 'done' ? ftcFootHTML(ch) : memberFbHTML(ch) + `<button class="btn alt block" data-act="reset">Replay this scenario</button>`) : min ? collapsed : reply;
   const oc = o ? `<div class="outcome ${o.tone}${ch.outcomeSeen ? '' : ' fresh'}"><b>${o.title}</b><br>${o.text}</div>` : ''; if (o) ch.outcomeSeen = true;
-  return { html: `${bar('Harbor · security analyst')}<div class="body" id="chatbody">${msgs}${oc}</div><div class="foot${footCls}${min ? ' min' : ''}">${foot}</div>` };
+  return { html: `${bar('Harbor · security analyst')}<div class="body" id="chatbody">${msgs}${oc}${after}${typingDots}</div><div class="foot${footCls}${min ? ' min' : ''}">${foot}</div>` };
 }
 function understandingHTML(L) {
   const on = Object.keys(L.signals).filter((k) => L.signals[k]);
@@ -1332,15 +1381,19 @@ document.addEventListener('click', (ev) => {
   else if (a === 'efbsend') { const k = S.cases[S.sel]; if (k) employeeFeedback(k, 'rating'); return; }
   else if (a === 'vfb' || a === 'vfbredo') { const k = S.cases[S.sel]; if (!k) return; k.vfb = a === 'vfb' ? Object.assign(k.vfb, { score: +t.dataset.v }) : { text: k.vfb.text, loss: k.vfb.loss, recovered: k.vfb.recovered }; }
   else if (a === 'ftc' || a === 'ftccopy' || a === 'ftcopen') {
-    const k = S.cases[S.sel]; if (!k) return; const ui = (S.ui.ftc ||= {})[k.mid] ||= {};
-    if (a === 'ftc') { ui.open = true; }
-    else if (a === 'ftcopen') { const note = 'Opened ' + ftcReport(k).siteName + ' to file the report with the member'; (k.acts ||= []).push(note); k.log.push(note); return; }   // the link itself opens the site
-    else { const r = ftcReport(k), all = t.dataset.i === 'all', text = all ? r.fields.map(([l, v]) => l + ': ' + v).join('\n') : r.fields[+t.dataset.i][1];
-      copyText(text).then(() => { ui.copied = all ? 'Report copied. Paste it into the form with the member.' : 'Copied: ' + r.fields[+t.dataset.i][0]; render(); }).catch(() => { ui.copied = 'Copy failed: select the text and copy it by hand.'; render(); });
-      if (all && !ui.logged) { ui.logged = true; const note = 'Prepared an FTC report for the member to file'; (k.acts ||= []).push(note); k.log.push(note);
-        const rr = recOf(k.mid), v = S.live.backend && rr && rr.be.view; if (v && v.case) post('/api/cases/' + v.case.case_id + '/action', { text: note }).catch(() => {}); }
+    const k = S.cases[S.sel]; if (!k) return; const ui = (S.ui.ftc ||= {})[k.mid] ||= {}, rec = recOf(k.mid), m = rec && rec.chat && rec.chat.ftc, d = (m && m.draft) || ui.draft;
+    if (a === 'ftc') { ui.busy = true; ui.err = ''; ftcDraft(k, 'assisted', m ? m.answers : {}).then((x) => { ui.draft = x; }).catch(() => { ui.err = 'Could not draft: the server is not reachable or is running older code.'; }).finally(() => { ui.busy = false; render(); }); }
+    else if (a === 'ftcopen') { const note = 'Opened ' + d.site.name + ' to file the report with the member'; (k.acts ||= []).push(note); k.log.push(note); return; }   // the link itself opens the site
+    else { const all = t.dataset.i === 'all', [si, j] = all ? [] : t.dataset.i.split('.').map(Number);
+      const text = all ? d.sections.map(([sec, f]) => sec + '\n' + f.map(([l, v]) => '  ' + l + ': ' + v).join('\n')).join('\n\n') : d.sections[si][1][j][1];
+      copyText(text).then(() => { ui.copied = all ? 'Report copied. Paste it into the form with the member.' : 'Copied: ' + d.sections[si][1][j][0]; render(); }).catch(() => { ui.copied = 'Copy failed: select the text and copy it by hand.'; render(); });
+      if (all && !ui.logged) { ui.logged = true; const note = 'Copied the FTC report to file with the member'; (k.acts ||= []).push(note); k.log.push(note);
+        const v = S.live.backend && rec && rec.be.view; if (v && v.case) post('/api/cases/' + v.case.case_id + '/action', { text: note }).catch(() => {}); }
       return; }
   }
+  else if (a === 'ftcm') { if (S.chat && S.chat.ftc && S.chat.ftc.step === 'offer') memberFtcChoose(S.chat, t.dataset.v); }
+  else if (a === 'ftcans') { const ch = S.chat, q = ch && ch.ftc && ch.ftc.qs[ch.ftc.i]; if (q) memberFtcAnswer(ch, q.chips[+t.dataset.i]); return; }
+  else if (a === 'ftcmcopy') { const f = S.chat && S.chat.ftc; if (f && f.draft) copyText(f.draft.story).then(() => { t.textContent = 'Copied'; }).catch(() => {}); return; }
   else if (a === 'vfbsend') { const k = S.cases[S.sel]; if (k) employeeFeedback(k, 'verdict'); return; }
   else if (a === 'reset') { S.ui.demoOpen = false; resetStory(); if (S.live.backend) beginStory(R()); }
   else if (a === 'resetall') { S.ui.demoOpen = false; resetAll(); }
@@ -1381,6 +1434,7 @@ document.addEventListener('input', (ev) => {
 document.addEventListener('focusin', (ev) => { S.ui.empFocus = ev.target.id === 'empin'; });
 document.addEventListener('submit', (ev) => {
   if (ev.target.dataset.act === 'empform') { ev.preventDefault(); const t = $('#empin'); if (t) employeeSay(t.value); return; }
+  if (ev.target.dataset.act === 'ftcform') { ev.preventDefault(); const ta = $('#ftcin'); if (ta && S.chat) memberFtcAnswer(S.chat, ta.value); return; }
   if (ev.target.dataset.act !== 'liveform') return; ev.preventDefault();
   const ta = $('#livein'); if (ta && ta.value.trim()) { if (S.chat && S.chat.human) memberToHuman(ta.value); else sendLive(ta.value); }
 });

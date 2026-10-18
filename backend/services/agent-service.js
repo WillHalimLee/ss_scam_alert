@@ -6,7 +6,7 @@
 const http = require('http'), crypto = require('crypto');
 const cfg = require('../lib/config'), { pool, q, ensureSchema } = require('../lib/db'), K = require('../lib/kafka'), llm = require('../lib/llm'), demo = require('../lib/demo');
 const { compose, whyFor, money, railWord } = require('../lib/compose');
-const agent = llm.agent, { json, readBody, serveStatic } = require('../../harbor/http.js'), feedback = require('../../harbor/feedback.js'), { redact } = require('../../harbor/redact.js');
+const agent = llm.agent, { json, readBody, serveStatic } = require('../../harbor/http.js'), feedback = require('../../harbor/feedback.js'), ftc = require('../../harbor/ftc.js'), { redact, deep } = require('../../harbor/redact.js');
 
 /* ---------- alert handling ---------- */
 let prod;
@@ -168,6 +168,15 @@ async function route(req, res) {
     return json(res, 200, { ok: true, n: rows.length });
   }
   if (p === '/api/interactions') return json(res, 200, (await q('select id, kind, case_id, member_id, story, mode, tone, agent_version, ms, detail, created_at from interactions order by id desc limit 500')).rows);
+  if (p === '/api/ftc/questions' && req.method === 'POST') { const b = await readBody(req); return json(res, 200, { questions: ftc.questionsFor(b.facts || {}), known: ftc.known(b.facts || {}) }); }
+  if (p === '/api/ftc/draft' && req.method === 'POST') {                          // the agent drafts the FTC report; an employee files it with the member
+    const b = await readBody(req), d = await ftc.draft(b), choice = ['assisted', 'self', 'later'].includes(b.choice) ? b.choice : 'assisted';
+    await q('insert into ftc_reports (case_id, member_id, choice, status, answers, draft) values ($1,$2,$3,$4,$5,$6)', [b.case_id || null, b.member_id || null, choice,
+      { assisted: 'ready_for_review', self: 'member_filing', later: 'not_now' }[choice], JSON.stringify(deep(b.answers || {})), JSON.stringify(d)]);
+    if (b.case_id && (await q('select 1 from cases where case_id=$1', [b.case_id])).rowCount) await say(b.case_id, 'system', `FTC report drafted (${choice === 'assisted' ? 'member asked for help: ready for an employee to review and file' : choice === 'self' ? 'member will file it themselves' : 'member chose not now'})`, 'system');
+    return json(res, 200, d);
+  }
+  if (p === '/api/ftc') return json(res, 200, (await q('select id, case_id, member_id, choice, status, answers, draft, created_at from ftc_reports order by id desc limit 100')).rows);
   if (p === '/api/review') return json(res, 200, (await q(`select r.id, r.event_id, r.member_id, r.reason, r.status, r.created_at, n.tag, n.risk from review_queue r left join event_notes n on n.event_id=r.event_id order by r.id desc limit 40`)).rows);
   if (p === '/api/retro') return json(res, 200, (await q('select finding_key, member_id, kind, summary, created_at from retro_findings order by created_at desc limit 40')).rows);
   m = p.match(/^\/api\/cases\/([\w-]+)\/(reply|resolve|log|action|takeover|join)$/);

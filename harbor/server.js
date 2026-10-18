@@ -2,7 +2,7 @@
 // Keys stay on the server. Set ONE of: ANTHROPIC_API_KEY, OPENAI_API_KEY (or HARBOR_PROVIDER=mock to test offline).
 // Optional: HARBOR_PROVIDER=ollama|openai|anthropic|mock (ollama needs no key: HARBOR_MODEL=qwen2.5:14b), HARBOR_MODEL=<model id>, PORT=8787
 const http = require('http');
-const agent = require('./agent.js'), feedback = require('./feedback.js'), { json, readBody, serveStatic } = require('./http.js');
+const agent = require('./agent.js'), feedback = require('./feedback.js'), ftc = require('./ftc.js'), ftcStore = feedback.store('ftc_reports'), { json, readBody, serveStatic } = require('./http.js');
 const PORT = +process.env.PORT || 8787;
 const hits = new Map(); // tiny per-IP rate limit: 30 requests / minute
 function limited(ip) {
@@ -25,6 +25,9 @@ http.createServer(async (req, res) => {
   if (p === '/api/feedback') return json(res, 200, feedback.fileStore.list());
   if (p === '/api/interactions' && req.method === 'POST') { const rows = feedback.cleanEvents(await readBody(req)); for (const r of rows) feedback.eventStore.add(Object.assign(r, { agent_version: agent.VERSION })); return json(res, 200, { ok: true, n: rows.length }); }
   if (p === '/api/interactions') return json(res, 200, feedback.eventStore.list(500));
+  if (p === '/api/ftc/questions' && req.method === 'POST') { const b = await readBody(req); return json(res, 200, { questions: ftc.questionsFor(b.facts || {}), known: ftc.known(b.facts || {}) }); }
+  if (p === '/api/ftc/draft' && req.method === 'POST') { const b = await readBody(req), d = await ftc.draft(b); ftcStore.add({ case_id: b.case_id || null, member_id: b.member_id || null, choice: b.choice || null, answers: b.answers || {}, draft: d }); return json(res, 200, d); }
+  if (p === '/api/ftc') return json(res, 200, ftcStore.list(100));
   if (p.startsWith('/api/')) return json(res, 404, { error: 'not found' });
   serveStatic(req, res, p);
 }).listen(PORT, () => {

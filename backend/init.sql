@@ -195,3 +195,16 @@ create table if not exists interactions (
   created_at timestamptz not null default now()
 );
 create index if not exists interactions_case on interactions (case_id, created_at);
+
+-- FTC report drafts, once an employee confirms a scam. The member chose: assisted (Harbor asked what it did not know, an employee
+-- reviews and files with them), self (they file, with a summary to paste) or later. Never submitted automatically.
+create table if not exists ftc_reports (
+  id serial primary key,
+  case_id text,
+  member_id text,
+  choice text,                                       -- assisted | self | later
+  status text not null,                              -- ready_for_review | member_filing | not_now
+  answers jsonb not null default '{}',
+  draft jsonb not null default '{}',                 -- sections mapped to the FTC form, story, category, site, model or template
+  created_at timestamptz not null default now()
+);

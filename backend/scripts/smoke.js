@@ -41,6 +41,12 @@ async function story([mid, want, text, planned]) {
   if (fb.status !== 200) bad.push('feedback ' + fb.status);
   const vd = await call('/api/feedback', { source: 'employee', kind: 'verdict', score: want === 'hold' ? 1 : -1, case_id: cid, member_id: mid, context: { loss: 0, recovered: 0 } });
   if (vd.status !== 200) bad.push('verdict ' + vd.status);
+  if (want === 'hold') {                                                          // a confirmed scam: questions and the agent's FTC draft
+    const facts = { member_id: mid, ato: mid === 'M1003', amount: '$1,000', method: 'wire', date: 'Oct 1, 9:00 AM', paid_to: 'R-1', recipient_new: true, member_said: [text || ''] };
+    const qs = await call('/api/ftc/questions', { facts }), dr = await call('/api/ftc/draft', { case_id: cid, member_id: mid, choice: 'assisted', facts, answers: { share: 'Keep me anonymous' } });
+    if (qs.status !== 200 || !Array.isArray(qs.j.questions)) bad.push('ftc questions ' + qs.status);
+    if (dr.status !== 200 || !(dr.j.sections || []).length || !/\$1,000/.test(dr.j.story || '')) bad.push('ftc draft ' + dr.status + ' ' + (dr.j.reason || ''));
+  }
   const ev = await call('/api/interactions', { events: [{ kind: 'chose', case_id: cid, member_id: mid, ms: 1200, detail: { label: 'smoke test', how: 'tap' } }] });
   if (ev.status !== 200 || ev.j.n !== 1) bad.push('interactions ' + ev.status);
   await call(`/api/cases/${cid}/log`, { direction: 'in', text: 'They told me to read the code: 482913', source: 'script' });          // a typed code must never be stored
