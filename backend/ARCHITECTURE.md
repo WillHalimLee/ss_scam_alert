@@ -6,8 +6,10 @@ Interactive version: run `task run`, open http://localhost:8787, then **Dev tool
 
 ```mermaid
 flowchart LR
-  APP[Browser app<br/>Member app + Employee console] -->|/api/demo: story events, then the payment| RAW
-  APP <-->|chat, take over, actions /api/cases| AG
+  APP[Browser app<br/>Member app + Security analyst panel] <--> GW[Gateway :8787<br/>the app + routes /api/*]
+  GW -->|/api/demo: story events, then the payment| RAW
+  GW <-->|chat, take over, actions /api/cases| AG
+  GW <-->|/api/screenshot| SS[Screenshot service :8791<br/>vision model reads it,<br/>code decides; image not stored]
   SRC[Other event sources / replayer] --> RAW[(events.raw<br/>key=member_id)]
   RAW --> SC[Scorer<br/>rules engine, no LLM]
   SC -->|every event| PG[(Postgres)]
@@ -20,11 +22,11 @@ flowchart LR
   AN -->|reads tagged history, cases, alerts| PG
   AN -->|recommends a light check-in, gated by code| AL
   TG -.->|rules quiet, LLM high| RV[Human review queue]
-  AL --> AG[Agent service + API server :8787<br/>case mgmt, first message compose.js,<br/>chat + reply guardrails, takeover]
+  AL --> AG[Agent service :8790<br/>case mgmt, first message compose.js,<br/>chat + reply guardrails, takeover]
   AG <--> PG
   AG --> OUT[(notifications.out)] --> DEL[Delivery adapter<br/>SMS / push] --> MEM[Member]
   MEM -->|reply| AG
-  AG -->|no reply / unclear| HUM[Employee console]
+  AG -->|no reply / unclear| HUM[Security analyst panel]
   RETRO[Retro cron<br/>SQL detectors + LLM insight] -->|reads| PG
   RETRO -->|findings| AL
 ```
@@ -37,7 +39,9 @@ One story from start to conversation, in order. The app's **Dev tools > Architec
 sequenceDiagram
   autonumber
   participant APP as Member app
-  participant API as API server :8787
+  participant GW as gateway :8787
+  participant API as agent service :8790
+  participant SS as screenshot service :8791
   participant RAW as events.raw
   participant SC as scorer (rules)
   participant PG as Postgres
@@ -46,15 +50,16 @@ sequenceDiagram
   participant AR as analysis.requests
   participant AN as analyst (14B)
   participant AL as alerts.risk
-  participant AG as agent (in API server)
+  participant AG as agent (consumer, same process)
   participant LLM as Ollama
   participant OUT as notifications.out
   participant DEL as delivery stub
-  participant EMP as Employee console
+  participant EMP as Security analyst panel
 
   rect rgba(47,138,70,0.08)
-  Note over APP,EMP: A. Pick a story
-  APP->>API: POST /api/demo/start
+  Note over APP,EMP: A. Pick a story (every browser call goes through the gateway)
+  APP->>GW: POST /api/demo/start
+  GW->>API: forwards /api/* to the agent service
   API->>PG: delete this member's old rows (demo reset)
   API->>RAW: __reset, then the account history (paced, about 3 s)
   RAW->>SC: group harbor-scorer, in order per member
@@ -63,12 +68,12 @@ sequenceDiagram
   SCD->>TG: group harbor-tagger, history queue
   TG->>LLM: tag + risk + note (tools over the tags table)
   TG->>PG: event_notes (data checks cap the risk)
-  APP->>API: GET /api/demo/state every 400 ms
+  APP->>GW: GET /api/demo/state every 400 ms
   end
 
   rect rgba(192,57,43,0.08)
   Note over APP,EMP: B. Send payment (fast path: no model before the decision)
-  APP->>API: POST /api/demo/send
+  APP->>GW: POST /api/demo/send
   API->>RAW: the payment event
   RAW->>SC: rules decide in a few ms: none / light check / hold
   SC->>PG: decision + alert in one transaction (outbox)
@@ -94,13 +99,34 @@ sequenceDiagram
 
   rect rgba(201,138,27,0.08)
   Note over APP,EMP: D. Conversation, takeover, timeout
-  APP->>API: POST /api/cases/:id/reply (Live AI) or /log (guided)
+  APP->>GW: POST /api/cases/:id/reply (Live AI) or /log (guided)
+  GW->>API: forwards (40 chat replies per minute per person)
   API->>LLM: chat model: reply + signals
   API-->>APP: reply shaped by code, buttons chosen from the signals
-  EMP->>API: GET /api/console (case, live events, analyst read)
-  EMP->>API: takeover: Harbor stops replying, employee messages
-  EMP->>API: actions, hand back to Harbor
+  EMP->>GW: GET /api/console (case, live events, analyst read)
+  EMP->>GW: takeover: Harbor stops replying, employee messages
+  EMP->>GW: actions, hand back to Harbor
   AG->>PG: no reply by due_at (10 min): escalate to a person
+  APP->>GW: code asks a person to join (push-back, distress, red flags): POST /api/cases/:id/join
+  end
+
+  rect rgba(122,76,168,0.08)
+  Note over APP,EMP: E. Screenshot (member taps 📷, Harbor offers it, or the analyst asks)
+  APP->>GW: POST /api/screenshot/analyze (resized in the browser to 1,600 px)
+  GW->>SS: routes /api/screenshot/* (10 per minute, 9 MB max)
+  SS->>LLM: qwen2.5vl:7b describes what it sees
+  SS->>PG: masked findings + SHA-256 fingerprint (the image is never stored)
+  SS-->>APP: code decides flags, risk and next steps; signals feed the chat
+  end
+
+  rect rgba(47,138,70,0.08)
+  Note over APP,EMP: F. Close-out
+  EMP->>GW: verdict "Confirmed scam": POST /api/feedback (kind verdict)
+  APP->>GW: FTC follow-up: POST /api/ftc/questions (only what the case does not answer)
+  APP->>GW: POST /api/ftc/draft
+  API->>LLM: the model writes the story; code fills the facts and the ending
+  API->>PG: ftc_reports (the analyst files it with the member)
+  APP->>GW: MFA tip choice and 1-5 feedback: /api/interactions, /api/feedback
   end
 ```
 
@@ -118,14 +144,16 @@ flowchart TB
 
   subgraph BROWSER["Browser"]
     UI_M["Member app<br/>(phone mock, Live AI or Guided)"]:::ui
-    UI_E["Employee console<br/>(case, live events, take over)"]:::ui
+    UI_E["Security analyst panel<br/>(case, live events, take over)"]:::ui
     UI_D["Dev tools<br/>simulator, architecture, live pipeline"]:::ui
     UI_I["Model inspector<br/>inspector.html"]:::ui
   end
 
   subgraph HOST["Host machine: Node.js processes (backend/scripts/start-all.sh, logs and pids in backend/.logs/)"]
     direction TB
-    subgraph API["agent-service.js  :8787  (the only HTTP port)"]
+    GW["gateway.js  :8787  (the only public port)<br/>serves the app, routes /api/*<br/>rate limits, size limits, CORS"]:::proc
+    SHOTSVC["screenshot.js  :8791 (internal)<br/>reads a member's screenshot;<br/>code decides flags, risk, next steps<br/>image never stored"]:::proc
+    subgraph API["agent-service.js  :8790 (internal, behind the gateway)"]
       direction TB
       HTTP["HTTP routes<br/>static app (harbor/http.js)<br/>/api/demo/start, send, state<br/>/api/console, /api/cases/:id/*<br/>/api/chat, /api/pipeline, /api/review<br/>/api/retro, /api/analyst/run, /api/status<br/>/api/traces (+ SSE stream)"]:::proc
       AGC["Agent consumer<br/>group harbor-agent, 2 partitions at once<br/>one open case per member, rate limit,<br/>first message via lib/compose.js"]:::proc
@@ -144,6 +172,7 @@ flowchart TB
   subgraph OLLAMA["Ollama  :11434  (local models; or ANTHROPIC / OPENAI keys)"]
     M14["qwen2.5:14b  HARBOR_MODEL<br/>chat, first message, analyst, retro"]:::model
     M3["qwen2.5:3b  HARBOR_TAG_MODEL<br/>tagger: tools + JSON schema"]:::model
+    MVL["qwen2.5vl:7b  HARBOR_VISION_MODEL<br/>reads screenshots"]:::model
   end
 
   subgraph DOCKER["Docker (Colima): docker compose project 'harbor'"]
@@ -163,15 +192,19 @@ flowchart TB
       PG_AN[("analyses")]:::store
       PG_CS[("cases, case_alerts, messages")]:::store
       PG_RT[("retro_findings")]:::store
-      PG_FB[("feedback, interactions<br/>ratings, verdicts, choices")]:::store
+      PG_FB[("feedback, interactions, screenshots,<br/>ftc_reports")]:::store
       PG_REF[("members, ground_truth,<br/>view v_rule_outcomes")]:::store
     end
   end
 
-  UI_M -->|"pick story, send payment, chat"| HTTP
-  UI_E -->|"console, take over, actions"| HTTP
-  UI_D -->|"/api/pipeline, /api/cases"| HTTP
-  UI_I -->|"/api/traces/stream"| HTTP
+  UI_M -->|"pick story, payment, chat, screenshots"| GW
+  UI_E -->|"console, take over, actions"| GW
+  UI_D -->|"/api/pipeline, /api/cases"| GW
+  UI_I -->|"/api/traces/stream"| GW
+  GW -->|"/api/* (everything else)"| HTTP
+  GW -->|"/api/screenshot/*"| SHOTSVC
+  SHOTSVC --> MVL
+  SHOTSVC -->|"findings + fingerprint"| PG_FB
 
   HTTP -->|"story history, then the payment"| T_RAW
   HTTP -->|"manual analyst run"| T_AN
@@ -230,7 +263,9 @@ flowchart TB
 | `harbor-redpanda` | `docker compose up` (`task run`, `task infra`) | `localhost:19092` (Kafka API) | - | - | - | - |
 | `harbor-postgres` | same | `localhost:5439` (volume `harbor_pgdata`, schema `init.sql`) | - | - | all tables | - |
 | Ollama | `task run` starts it if needed | `localhost:11434` | - | - | - | serves both models |
-| `agent-service.js` | `task run` (foreground) or `start-all.sh` | `:8787` (`AGENT_PORT`) app + API | `alerts.risk` (`harbor-agent`), `notifications.out` (`harbor-delivery`) | `events.raw` (demo), `notifications.out`, `analysis.requests` (manual) | cases, case_alerts, messages, alerts; reads everything for the console | 14B: first message, chat |
+| `gateway.js` | `task run` (foreground) or `start-all.sh` | `:8787` (public): the app + every `/api/*` | - | - | - | - |
+| `screenshot.js` | `start-all.sh` | `:8791` (internal) | - | - | screenshots (findings only, never the image) | `qwen2.5vl:7b` |
+| `agent-service.js` | `start-all.sh` | `:8790` (`AGENT_PORT`, internal, behind the gateway) | `alerts.risk` (`harbor-agent`), `notifications.out` (`harbor-delivery`) | `events.raw` (demo), `notifications.out`, `analysis.requests` (manual) | cases, case_alerts, messages, alerts; reads everything for the console | 14B: first message, chat |
 | `scorer.js` | `start-all.sh` | - | `events.raw` (`harbor-scorer`) | `alerts.risk`, `events.scored` | events, member_state, decisions, alerts | none |
 | `tagger.js` | `start-all.sh` | - | `events.scored` (`harbor-tagger`) | `analysis.requests` | event_notes, tags, review_queue | 3B |
 | `analyst.js` | `start-all.sh` | - | `analysis.requests` (`harbor-analyst`) | `alerts.risk` | analyses; reads events, notes, decisions, cases | 14B |
@@ -251,6 +286,8 @@ Rules decide; models read and write; code checks every model output before it ca
 | Tagger, `qwen2.5:3b` (`services/tagger.js`) | Category (from the data dictionary) + tag + risk + note for every event | The event with its direction (incoming / outgoing), recent key events, the rules decision, the tag vocabulary | New tags must name a pattern (no amounts, dates or ids, not just the event type, no near-duplicates, size cap). Everyday events use the seed vocabulary only. Risk is capped at `medium` for everyday events, payments below the member's usual amount and the bank's own interventions, so only plausible items reach the human review queue. |
 | Analyst, `HARBOR_MODEL` (`services/analyst.js`) | A staff-facing read of the member's recent tagged history; may recommend a light check-in | Tagged timeline, rule findings, the rules decision and any look-alike reason, hours since a password reset, open case / cooldown | It can only recommend: no open case, no rules alert, at least two medium/high tagged events, cooldown. If the rules judged a look-alike, risk is capped at `medium`. Its text is shown to staff only. |
 | Composer, `HARBOR_MODEL` (`lib/compose.js`) | The first message to the member | A brief in second person: amount and method, held or light check, takeover facts, Planned Big Payment, the closing question | Repairs the brand name and inserts "Sound never asks..." if missing; rejects wrong paused / not-paused wording, a missing amount, more than one question, banned words, third-person text. Falls back to a fixed template after a rejection or `COMPOSE_TIMEOUT_MS`. |
+| Screenshot reader, `qwen2.5vl:7b` (`lib/screenshot.js`) | Describe a screenshot the member sends: kind, who it claims to be from, contacts, links, money asked, what it wants, its text | The image (resized in the browser) | Keyword backstops over the transcribed text can only add caution (gift cards, crypto, a code, secrecy, links). Code decides the flags, risk and next steps; a plain invoice or a Sound notice that asks for nothing is low risk. Links are shown defanged. The image is never stored. |
+| FTC story writer, `HARBOR_MODEL` (`harbor/ftc.js`) | The member's story and category for an FTC report | Clearly named facts and the member's answers | Code fills every checkable field, rejects amounts it was not given, writes the true ending with the amount, and rewrites impersonated roles ("someone claiming to be a federal agent"). |
 | Chat agent, `HARBOR_MODEL` (`harbor/agent.js`) | Replies to the member and reads signals (who is pressuring them, did they verify...) | Member-safe reasons only, the conversation, the buttons on screen; Ollama output is constrained to a JSON schema of valid signal names | `shapeReply`: one question, no `[placeholders]`, the "officials never ask / hang up and call back" line when an official is named, the stop button when a takeover is denied, a private-conversation offer on red flags, no pointer to "This looks fine" until that button is shown. Keyword backstops may only add caution signals. A shared password or code replaces the reply with a fixed warning. Signals decide which buttons appear. |
 
 Every model call is written to the trace log (`/api/traces`, Model inspector), including each guardrail that changed the output.
@@ -265,27 +302,33 @@ Every model call is written to the trace log (`/api/traces`, Model inspector), i
 |---|---|
 | `harbor/engine.js` | Rules engine, shared by the browser and the scorer. |
 | `harbor/agent.js` | Chat agent: prompt, provider calls (`callModel`, Ollama schema output), guardrails. |
-| `harbor/http.js` | Static files, JSON and body helpers shared by `harbor/server.js` (chat only) and the API server; one list of files that are never served. |
+| `harbor/http.js` | Static files, JSON and body helpers shared by the gateway and `harbor/server.js` (chat only); one list of files that are never served. |
+| `backend/services/gateway.js` | The one public port: serves the app, routes `/api/screenshot/*` to the screenshot service and the rest to the agent service, rate and size limits, CORS, `/api/gateway/health`. |
+| `backend/lib/screenshot.js`, `backend/services/screenshot.js` | Screenshot reading: the vision call, then code decisions (flags, risk, next steps, signals, FTC hints). |
 | `harbor/trace.js` | Model trace log and its endpoints. |
+| `harbor/ftc.js` | FTC report: which questions to ask, the form-matched draft, code checks on the model's story. |
+| `harbor/feedback.js`, `harbor/redact.js` | Feedback, verdicts and the interaction log (validation, file store for `task chat`); masking of passwords, codes, card and SSN numbers. |
 | `backend/lib/compose.js` | First message: brief, checks, template. |
 | `backend/lib/llm.js` | JSON calls, tool loop, schema calls for the pipeline services, on top of `agent.callModel`. |
 | `backend/lib/demo.js`, `events.js`, `kafka.js`, `db.js`, `config.js` | Demo story selection, event envelope, Kafka with retries and DLQ, Postgres and schema upgrades, settings. |
-| `backend/services/*` | scorer, tagger, analyst, agent-service (API + agent + delivery stub), retro, replayer. |
+| `backend/services/*` | gateway, agent-service (cases, chat, demo API + agent + delivery stub), screenshot, scorer, tagger, analyst, retro, replayer. |
 | `backend/scripts/smoke.js` | End-to-end check of every story and route (`task smoke`). |
-| `harbor/eval_agent.js` | Scripted conversations that score the chat agent and first messages (`task eval`). |
+| `harbor/eval_agent.js` | Model eval (`task eval`, `--section chat,compose,ftc,shots`): scripted conversations, first messages, FTC drafts and screenshot fixtures (`harbor/fixtures/screenshots/`). |
+| `harbor/test_ui.js` | The real app in a stand-in browser: every tab, every story to its end (`task test:ui`, `-- --live` against the running gateway). |
 
 ## How the demo drives it
 
-`task run` starts Docker (Redpanda, Postgres), the scorer and tagger, then the **agent service, which is also the API server** on one port (8787) and serves the app.
+`task run` starts Docker (Redpanda, Postgres), the pipeline workers, the agent service (:8790) and the screenshot service (:8791), then the **gateway** on :8787, the one public port: it serves the app and routes every `/api/*` call to the service that owns it.
 
 | Browser action | API call | What happens |
 |---|---|---|
 | Pick a story / Reset | `POST /api/demo/start` | The member's old rows are deleted, an in-band `__reset` control event is published, then the account history is published to `events.raw` at a paced rate (about 3 s total) so the UI can show events being consumed. A newer start cancels an older stream. |
 | Send payment | `POST /api/demo/send` | The trigger payment event is published. The scorer decides in a few ms, writes the decision and alert in one transaction; the agent composes the first message (LLM, template if it takes over 9 s). |
 | Watching progress | `GET /api/demo/state` | Processed event count, the decision with its rule trace, the alert, the AI note, the case, messages and timings. |
-| Employee console | `GET /api/console` | Latest case per member as a full view. |
+| Security analyst panel | `GET /api/console` | Latest case per member as a full view. |
 | Member chat | `POST /api/cases/:id/reply` (Live AI) or `/log` (guided script) | Stored on the case; the guided script is mirrored, not delivered. |
 | Harbor asks a person to join | `POST /api/cases/:id/join` | After each Live AI reply, code (not the model) checks whether a person should step in: the member pushes back or insists on sending (`member_insists`), sounds distressed or angry, asks for a person, denies a takeover, shares a code, shows 2+ red flags, or the chat passes 4 turns without a decision. The member is told a team member is coming; the console pings, opens that case with a banner and a Join chat button, and marks it in the queue. The request and the employee's response time go to the case log and the interaction log. |
+| Screenshot | `POST /api/screenshot/analyze`, `GET /api/screenshot`, `GET /api/screenshot/health` (screenshot service, through the gateway) | The member can send a screenshot any time (📷 next to the mic); Harbor offers it when the member mentions a text, email, link, website or app; an employee can ask for one from the console. A local vision model (`qwen2.5vl:7b`) describes what it sees; **code decides** the red flags (asks for a code, gift cards or crypto, keep it secret, claims to be Sound or an authority, links, urgency), the risk and the member's next steps, with keyword backstops over the transcribed text because the 7B model classifies unreliably. A plain invoice is low risk with gentle wording. The findings feed Harbor's signals, the ask-a-person check, the console timeline (links shown defanged) and the FTC draft (fewer questions). The image is resized in the browser and **never stored**: only masked findings and a SHA-256 fingerprint. |
 | Employee takes over | `POST /api/cases/:id/takeover` | Case moves to `escalated_human`; the agent stops replying until the employee hands the chat back. Employee messages are stored with source `employee`. |
 | Employee actions | `POST /api/cases/:id/action` | Recorded on the case log. |
 | Feedback | `POST /api/feedback`, `GET /api/feedback` | Member rating 1-5 (5 = extremely helpful) when a conversation ends, employee rating 1-5 per case, both with optional text. Stored in `feedback` with the agent version and a snapshot of the conversation, signals and case, so it survives demo resets and can be analysed later. Shown under Dev tools > Live pipeline. |
@@ -311,7 +354,7 @@ Each story keeps its own state in the browser, so switching stories never resets
 | Small model's risk goes straight to review | **Data checks overrule it** (direction, member baseline, event category). | A 3B model rated incoming deposits and $20 payments "high"; the review queue was mostly noise. |
 | Agent sends a message per alert | **One open case per member.** Further alerts join it; a rate limit applies (takeover is exempt); channel is chosen per case. | A takeover produced two alerts 8 minutes apart; the member must get one message. Takeover goes to the phone on file *before* the change. |
 | Retro "looks for insights" | **SQL detectors find candidates; the LLM only writes the insight sentence.** Findings are deduped by key and re-enter the same `alerts.risk` topic. | Cheap, repeatable, auditable. Retro payments have already completed, so the agent switches to a follow-up, recovery-oriented tone. |
-| Separate chat server and agent service | **One API server** serves the app, demo, case and chat endpoints and runs the agent. | One port to run and demo. Fewer moving parts. |
+| Separate chat server and agent service | **One gateway** in front (:8787) serves the app and routes `/api/*`; the agent service (cases, chat, demo, pipeline API) and the screenshot service sit behind it on internal ports. | One front door (one origin, no CORS juggling), and rate limits, size limits and health in one place. The agent is no longer the web server, and new services (the screenshot reader) plug in by route. |
 | Agent always owns the conversation | **Employee can take over** a chat and hand it back. | A person must be able to step in the moment a member needs one, with the full context. |
 | (not in sketch) | `member_state` table, case timers, outcome view `v_rule_outcomes` | Restarts do not lose context. A member who never replies reaches a human. Rules can be measured against outcomes. |
 
@@ -319,7 +362,7 @@ Each story keeps its own state in the browser, so switching stories never resets
 
 | Topic | Key | Producer | Consumer group |
 |---|---|---|---|
-| `events.raw` | member_id | API server (`/api/demo/*`), replayer, real sources | `harbor-scorer` |
+| `events.raw` | member_id | agent service (`/api/demo/*`, through the gateway), replayer, real sources | `harbor-scorer` |
 | `events.scored` | member_id | scorer (every event) | `harbor-tagger` |
 | `analysis.requests` | member_id | tagger (medium/high tag or rules alert) | `harbor-analyst` |
 | `alerts.risk` | member_id | scorer, retro, analyst | `harbor-agent` |
@@ -333,7 +376,8 @@ cd backend
 npm install
 npm run up            # Redpanda (Kafka API, :19092) + Postgres (:5439); schema from init.sql
 npm run seed
-./scripts/start-all.sh                       # scorer, tagger, analyst, agent service (HARBOR_PROVIDER=ollama by default)
+./scripts/start-all.sh                       # scorer, tagger, analyst, agent (:8790), screenshot (:8791), gateway (:8787); HARBOR_PROVIDER=ollama by default
+ollama pull qwen2.5vl:7b                     # once: the screenshot service's vision model (about 6 GB)
 # bulk load (optional; the demo UI streams one member at a time via the API):
 node services/replayer.js --members M1003,M1001,M1039,M1057,M1002,M1004 --rate 60
 node services/retro.js --once --as-of 2026-10-05T00:00:00Z
@@ -349,7 +393,9 @@ Retro in production: `0 3 * * * cd /path/backend && node services/retro.js --onc
 - A 3B model makes weak calls sometimes (it can rate a takeover pattern "medium", or write a wrong note such as "$83 is 5.1x baseline"). That is why tags are advisory, risk is capped by data checks, and the analyst's actions are gated in code.
 - The 14B analyst can misread time gaps ("shortly after" for 25 hours) even when given the number; look-alike risk is capped in code.
 - One Ollama serves the tagger, analyst, composer and chat. `task run` sets `OLLAMA_NUM_PARALLEL=4` so requests to the same model no longer queue (measured: two 14B requests at once took 832 + 1,666 ms, the second waiting for the first). They still share one GPU, so under a tagger backlog the first message can exceed `COMPOSE_TIMEOUT_MS` (9 s) and the template is used. Production would give the member-facing model its own capacity.
-- There is no automated browser test: `task smoke` covers the API, not the page.
+- `task test:ui` runs the real app in a stand-in browser (no rendering engine): it catches script errors and broken flows, not layout. A real-browser test (e.g. Playwright) would add that.
+- The gateway is a single process with no authentication: fine for a local demo. Production needs auth (member and staff sessions), TLS and at least two instances behind a load balancer.
+- The vision model shares the GPU with the 14B and 3B models; a screenshot takes 4-10 s locally.
 - The tagger is slower than the replay (LLM-bound). That is the point of the split, but lag should be monitored; there is no alert on consumer lag yet.
 - The scorer's in-memory state cache assumes one scorer instance per partition set. Scaling out relies on the consumer group's partition assignment plus the persisted `member_state`.
 - Case timeout is wall-clock (`CASE_TIMEOUT_SEC`), while retro uses event time. Fine for a demo; unify before production.

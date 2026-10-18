@@ -36,13 +36,14 @@ const SIGNAL_LABEL = { authority_pressure: 'Someone claiming authority', secrecy
 async function checkLive() {
   try { const j = await (await fetch(API + '/api/status')).json(); S.live.avail = !!j.live; S.live.provider = j.provider || ''; S.live.model = j.model || ''; S.live.timeout = j.timeoutMs || 9000; S.live.backend = !!j.backend; }
   catch { S.live.avail = false; }
+  try { S.live.shot = !!(await (await fetch(API + '/api/screenshot/health')).json()).ready; } catch { S.live.shot = false; }   // the vision model is pulled and the service is up
   if (!S.live.avail) S.live.mode = 'scripted'; else if (!S.live.chosen) S.live.mode = 'live';   // Live AI is the default whenever a model is available
   render();
   if (S.live.backend) beginStory();
 }
 
 /* ---------- backend mode: the demo streams into the real pipeline (Kafka -> scorer -> Postgres -> agent) ---------- */
-/** Every action on the member's side lights up the Employee console tab, so staff know something just happened. */
+/** Every action on the member's side lights up the Security analyst panel tab, so staff know something just happened. */
 let pingTimer = null;
 function empPing(msg, openMid, ms = 5200) {
   if (openMid) S.ui.pingSel = openMid;                                         // clicking the toast opens this member's case
@@ -315,9 +316,52 @@ function liveCtx(c) {
   return { amount: c.amt, rail: c.rail, recipient: c.recip, reasons: [memberReason(c).replace(/\s*So I wanted to check in first\.?/, '').replace(/\s*I wanted to make sure it's really you\.?/, '')], ato: c.ato, level: c.dec.level,
     trustedContact: D.events[c.sc.mid].some((e) => e.t <= c.dec.t && e.tc), name: c.name === 'you' ? '' : c.name };
 }
+/* ---------- screenshot tool: the member can send a screenshot any time (📷), Harbor offers it when the member mentions a text, email,
+   link, website or app, and an employee can ask for one. The screenshot service reads it; code decides what it means. ---------- */
+const SHOT_HINT = /\b(text(ed|s)?|message|sms|e-?mail|link|website|site|app|dm|whatsapp|instagram|facebook|messenger|screenshot|pop-?up|ad)\b/i;
+const KIND_LABEL = { text_message: 'a text message', email: 'an email', chat_or_dm: 'a chat message', social_media_post: 'a social media post', website: 'a website', payment_app: 'a payment app screen', call_log: 'a call log', bank_or_app_screen: 'an app screen', other: 'a screenshot' };
+const shotBtn = (busy) => (S.live.shot ? `<button type="button" class="mic shotbtn" data-act="shot" aria-label="Send a screenshot" title="Send a screenshot" ${busy ? 'disabled' : ''}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button><input type="file" id="shotin" accept="image/*" hidden>` : '');
+function offerShot(ch, who = 'bot') {
+  if (!S.live.shot || ch.shotOffer || (ch.shots || []).length || ch.outcome) return;
+  ch.shotOffer = true; ch.msgs.push({ f: who, h: 'If you have it, you can send me a screenshot of that message. I\'ll take a look and tell you what I see.' });
+}
+/** Phone screenshots are large: shrink to at most 1,600 px before sending (faster upload, quicker vision model). */
+function shrink(file) {
+  return new Promise((ok, no) => { const r = new FileReader(); r.onerror = () => no(new Error('could not read the file')); r.onload = () => { const img = new Image(); img.onerror = () => no(new Error('that file is not an image'));
+    img.onload = () => { const k = Math.min(1, 1600 / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); ok(c.toDataURL('image/jpeg', 0.85)); }; img.src = r.result; }; r.readAsDataURL(file); });
+}
+async function sendShot(ch, file) {
+  if (!ch || ch.shotBusy) return;
+  let url; try { url = await shrink(file); } catch (e) { ch.msgs.push({ f: 'bot', h: 'Sorry, I couldn\'t open that file. Please send a photo or screenshot.' }); return render(); }
+  return analyzeShot(ch, url);
+}
+async function analyzeShot(ch, url) {
+  ch.shotBusy = true; ch.typing = true; ch.shotOffer = true;
+  ch.msgs.push({ f: 'me', h: `<img class="shotimg" src="${url}" alt="Screenshot you sent">` }); ch.answers.push({ q: 'screenshot', a: '(screenshot)' }); render();
+  empPing('📷 ' + memberName(ch.c.sc.mid) + ' sent a screenshot', ch.c.sc.mid);
+  const t0 = Date.now();
+  try {
+    const r = await post('/api/screenshot/analyze', { image: url, case_id: caseId(ch), member_id: ch.c.sc.mid });
+    const f = r.findings, d = r.decision, from = f.claims_to_be || f.sender;
+    const lines = [`I can see ${KIND_LABEL[f.kind] || 'a screenshot'}${from ? ` from <b>${esc(from)}</b>` : ''}${f.money_requested ? ` asking for <b>${esc(f.money_requested)}</b>` : ''}.`,
+      d.flags.length ? 'What stands out: ' + d.flags.map((x) => esc(x.charAt(0).toLowerCase() + x.slice(1))).join(', ') + '.' : '', ...d.next_steps.slice(0, 3).map(esc)].filter(Boolean);
+    (ch.shots ||= []).push(Object.assign(r, { thumb: url, at: Date.now() }));          // the image stays in this browser only
+    ch.msgs.push({ f: 'bot', h: lines.join(' ') });
+    mirror('in', '📷 Sent a screenshot (' + (KIND_LABEL[f.kind] || 'screenshot') + (from ? ' from ' + from : '') + ')', true, ch); mirror('out', lines.join(' ').replace(/<[^>]+>/g, ''), true, ch, 'screenshot');
+    track('screenshot', ch, { kind: f.kind, risk: d.risk, flags: d.flags }, Date.now() - t0);
+    if (ch.live) { for (const sg of d.signals) ch.live.signals[sg] = true; const why = !ch.joinReq && (d.risk === 'high' ? 'sent a screenshot with clear warning signs' : joinReason(ch)); if (why) requestJoin(ch, why); }
+    else if (d.risk === 'high' && !ch.joinReq) requestJoin(ch, 'sent a screenshot with clear warning signs');
+  } catch (e) {
+    ch.msgs.push({ f: 'bot', h: /503|404/.test(e.message) ? 'Screenshot reading isn\'t set up right now. You can describe the message in your own words instead.' : 'Sorry, I couldn\'t read that screenshot. You can describe the message in your own words instead.' });
+  }
+  ch.shotBusy = false; ch.typing = false; render();
+}
+
 /* ---------- asking a person to join: code (not the model) decides when Harbor should not carry the conversation alone ---------- */
 function joinReason(ch) {
-  const L = ch.live, sg = L.signals, turns = L.hist.length / 2;
+  const L = ch.live; if (!L) return null;
+  const sg = L.signals, turns = L.hist.length / 2;
   if (sg.credential_shared) return 'shared a password or code';
   if (sg.member_denies_changes) return 'says the account changes were not theirs';
   if (sg.wants_person) return 'asked for a person';
@@ -349,6 +393,7 @@ async function sendLive(text, via = S.voice.fromVoice ? 'voice' : 'keyboard') {
     for (const k in j.signals) if (j.signals[k]) L.signals[k] = true;
     Object.assign(L, { state: j.member_state, note: j.handoff_note, guarded: j.guarded, provider: j.provider, pending: false }); if (j.tone) ch.tone = j.tone;
     const why = !ch.joinReq && joinReason(ch); if (why) requestJoin(ch, why);
+    if (SHOT_HINT.test(text)) offerShot(ch);                                  // code decides when a screenshot would help
   } catch (e) {
     if (ch.dead || ch.outcome) return;
     track('fallback', ch, { error: e.name === 'AbortError' ? 'timeout after ' + S.live.timeout + ' ms' : String(e.message).slice(0, 80), after_turns: Math.floor(L.hist.length / 2) });
@@ -373,6 +418,7 @@ function choose(i, how = 'tap') {
   const ch = S.chat, n = node(ch.cur, ch.c), pick = n.choices[i];
   chosen(ch, pick.t, i, n.choices.length, how);
   ch.msgs.push({ f: 'me', h: esc(pick.t) });
+  if (/\b(texted|called or texted|online|website|contacted me)\b/i.test(pick.t)) setTimeout(() => { offerShot(ch); render(); }, 2500);   // guided: after Harbor's next question
   ch.answers.push({ q: ch.cur, a: pick.t }); mirror('in', pick.t); empPing('Member chose: "' + pick.t + '"');
   if (pick.back) { ch.path.pop(); pushNode(ch.path.pop() || 'start'); }
   else if (pick.go) pushNode(pick.go);
@@ -380,16 +426,18 @@ function choose(i, how = 'tap') {
   render();
 }
 function finish(key) {
-  const ch = S.chat; ch.outcome = key; ch.queue = []; ch.typing = false; ch.draining = false; const o = OUTCOMES[key], prev = S.cases[ch.c.sc.mid];
-  const summary = {
+  const ch = S.chat; ch.outcome = key; ch.queue = []; ch.typing = false; ch.draining = false;
+  const o = OUTCOMES[key], prev = S.cases[ch.c.sc.mid];
+  const summary = Object.assign(prev ? { acts: prev.acts, efb: prev.efb, vfb: prev.vfb, real: prev.real, stepSeen: prev.stepSeen } : {}, {   // what staff already did on the case stays
     mid: ch.c.sc.mid, who: ch.c.sc.name, tag: ch.c.sc.tag, dec: ch.c.dec, status: o.status, answers: ch.answers.slice(), key, updated: 'Just now', stage: 'done',
-    msgs: ch.msgs.filter((m) => m.f === 'bot' || m.f === 'me').map((m) => ({ f: m.f, t: stripHTML(m.h) })),
+    msgs: ch.msgs.filter((m) => m.f === 'bot' || m.f === 'me' || m.f === 'emp').map((m) => ({ f: m.f, t: stripHTML(m.h) })),
     log: [...(prev ? prev.log : [`Harbor paused ${ch.c.amt} ${ch.c.rail}`]), ...(ch.answers.length ? ['Member chat: ' + ch.answers.map((a) => '"' + a.a + '"').join(' → ')] : ['No member reply']), 'Outcome: ' + o.status],
-  };
+  });
   const L = ch.live;
   if (L) { summary.live = true; summary.signals = Object.keys(L.signals).filter((k) => L.signals[k]); summary.note = L.note; summary.state = L.state;
     summary.log.splice(summary.log.length - 1, 0, 'Harbor\'s read (' + L.provider + '): ' + (summary.signals.map((k) => SIGNAL_LABEL[k]).join(', ') || 'no risk signals') + (L.note ? '. Note: ' + L.note : '')); }
   S.cases[ch.c.sc.mid] = summary;
+  if (ch.ftcPending) { ch.ftcPending = null; setTimeout(() => startMemberFtc(summary), 0); }   // a verdict saved while the member was still talking
   empPing('Outcome: ' + o.status);
   const cid = caseId(ch); if (cid) post('/api/cases/' + cid + '/resolve', { outcome: key }).catch(() => {});
 }
@@ -429,6 +477,23 @@ function employeeFeedback(k, kind) {
   sendFeedback(fb, { source: 'employee', kind, score: fb.score, comment: fb.text, case_id: (real && real.case_id) || (rec && rec.chat ? caseId(rec.chat) : null), member_id: k.mid, outcome: k.key,
     mode: k.live ? 'live' : 'guided', context: Object.assign(caseSnapshot(k), kind === 'verdict' ? { loss: +fb.loss || 0, recovered: +fb.recovered || 0 } : {}) },
     kind === 'verdict' && fb.score === 1 ? () => startMemberFtc(k) : null);           // a confirmed scam: Harbor offers to help the member report it
+}
+/** End of a conversation: suggest 2-step sign-in before asking for feedback. A passkey first: it cannot be typed into a fake
+ *  site, unlike a texted code (Sarah's attacker phished her through a fake Sound text). The prototype records the choice only. */
+const MFA_CHOICES = [['passkey', 'Set up a passkey'], ['app', 'Use an authenticator app'], ['later', 'Not now']];
+function mfaHTML(ch) {
+  const m = ch.mfa ||= {}, ato = ch.c.ato;
+  if (m.done) return m.choice === 'later' ? '' : `<p class="small mfadone">🔐 ${m.choice === 'passkey' ? 'Passkey' : 'Authenticator app'} set up. New sign-ins will need it from now on.</p>`;
+  return `<div class="fb mfa" role="group" aria-label="Protect your account"><b>🔐 Protect your account with 2-step sign-in</b>
+    <p class="small" style="margin:6px 0 8px">${ato ? 'Someone got into your account with your password. 2-step sign-in would have stopped them, because they would also need your phone.' : 'Scammers often try to get into accounts next. 2-step sign-in keeps them out even if they get your password.'}
+    A <b>passkey</b> is the strongest choice: it can't be typed into a fake website.</p>
+    <div class="mfabtns">${MFA_CHOICES.map(([v, l], i) => `<button type="button" class="${i ? 'btn alt sm' : 'btn sm'}" data-act="mfa" data-v="${v}">${l}</button>`).join('')}</div></div>`;
+}
+function memberMfa(ch, choice) {
+  const m = ch.mfa ||= {}, label = MFA_CHOICES.find((c) => c[0] === choice)[1]; m.choice = choice; m.done = true;
+  mirror('in', '2-step sign-in: ' + label, true, ch); track('mfa', ch, { choice, ato: !!ch.c.ato });
+  const k = S.cases[ch.c.sc.mid]; if (k && choice !== 'later') caseNote(k, 'Member turned on 2-step sign-in (' + (choice === 'passkey' ? 'passkey' : 'authenticator app') + ')');
+  if (choice !== 'later') empPing('🔐 ' + memberName(ch.c.sc.mid) + ' turned on 2-step sign-in', ch.c.sc.mid);
 }
 function memberFbHTML(ch) {
   const fb = ch.fb ||= {};
@@ -470,14 +535,21 @@ function ftcFacts(k) {
   const d = k.dec, ev = txnEvent(k), said = (k.msgs || []).filter((m) => m.f === 'me').map((m) => m.t);
   return { member_id: k.mid, ato: d.rules.some((r) => r.id === 'ATO'), amount: money(d.amt), method: railWord(d.rail), date: fmt(d.t), date_iso: new Date(d.t).toISOString(), recipient_new: d.rs === 'New',
     paid_to: d.rail === 'Cash' ? 'cash handed over in person' : (ev.rid || 'the recipient') + ' (account details on file at Sound)',
+    screenshot: ((recOf(k.mid) || {}).chat || {}).shots ? recOf(k.mid).chat.shots.slice(-1)[0].decision.ftc : null,
     loss: +(k.vfb && k.vfb.loss) ? money(+k.vfb.loss) : null, recovered: +(k.vfb && k.vfb.recovered) ? money(+k.vfb.recovered) : null, signals: k.signals || [], member_said: said.slice(0, 6) };
 }
 const ftcCaseId = (k) => { const real = k.real && k.real.case, rec = recOf(k.mid); return (real && real.case_id) || (rec && rec.chat ? caseId(rec.chat) : null); };
+/** Records a staff action on the case ("Done so far" and the case log); `toServer` also stores it on the real case. */
+function caseNote(k, note, toServer) {
+  (k.acts ||= []).push(note); k.log.push(note); k.updated = 'Just now';
+  const cid = toServer && ftcCaseId(k); if (cid) post('/api/cases/' + cid + '/action', { text: note }).catch(() => {});
+}
 const ftcDraft = (k, choice, answers) => post('/api/ftc/draft', { case_id: ftcCaseId(k), member_id: k.mid, choice, facts: ftcFacts(k), answers: answers || {} });
 const FTC_CHOICES = [['assisted', 'Help me report it'], ['self', 'I\'ll report it myself'], ['later', 'Not now']];
 /** The member's follow-up in the chat, after the employee records "Confirmed scam". */
 function startMemberFtc(k) {
   const rec = recOf(k.mid), ch = rec && rec.chat; if (!ch || ch.ftc) return;
+  if (!ch.outcome) { ch.ftcPending = k; return; }                       // the member is still talking: offer it when the chat ends
   ch.ftc = { step: 'offer', from: ch.msgs.length, answers: {}, qs: [], i: 0, k };
   ch.ftc.ready = post('/api/ftc/questions', { facts: ftcFacts(k) }).then((j) => { ch.ftc.qs = j.questions || []; ch.ftc.known = j.known || {}; }).catch(() => { ch.ftc.offline = true; });
   const who = memberName(k.mid);
@@ -595,14 +667,15 @@ function phoneHTML() {
   if (opts.length) { const key = opts.map((x) => x.t).join('|'); if (ch.offKey !== key) { ch.offKey = key; ch.offAt = Date.now(); track('offered', ch, { options: opts.map((x) => x.t), node: L ? 'live' : ch.cur }); } }
   const chips = opts.map((x, i) => `<button class="choice" data-act="choose" data-i="${i}">${esc(x.t)}</button>`).join('');
   const mic = o ? { btn: '', hint: '' } : micParts(busy), hasBox = ch.human || (L && !L.trusted);
-  const box = hasBox ? `<form class="livebox" data-act="liveform"><textarea id="livein" rows="2" maxlength="600" placeholder="Or type here" aria-label="${ch.human ? 'Message to the Sound team member' : 'Message to Harbor'}" ${busy ? 'disabled' : ''}>${esc(S.voice.draft || '')}</textarea><button class="btn sm" type="submit" ${busy ? 'disabled' : ''}>Send</button>${mic.btn}</form>` : '';
+  const box = hasBox ? `<form class="livebox" data-act="liveform"><textarea id="livein" rows="2" maxlength="600" placeholder="Or type here" aria-label="${ch.human ? 'Message to the Sound team member' : 'Message to Harbor'}" ${busy ? 'disabled' : ''}>${esc(S.voice.draft || '')}</textarea><button class="btn sm" type="submit" ${busy ? 'disabled' : ''}>Send</button>${mic.btn}${shotBtn(busy || ch.shotBusy)}</form>` : '';
   const footKey = [ch.cur, ch.human ? 'h' : '', ch.msgs.length, ch.outcome || '', busy ? 'b' : 'r', L ? L.hist.length : ''].join('|');
   const footCls = ch.footKey === footKey ? '' : ' fresh'; ch.footKey = footKey;
   // Like the Claude app: tapping the conversation collapses the reply panel to a slim bar at the bottom; tapping the bar brings it back up.
   const min = !!S.ui.footMin && !o;
-  const reply = mic.hint + (hasBox ? box : busy ? '' : mic.btn) + chips + (ch.human || opts.some((x) => x.end === 'human') ? '' : `<button class="btn ghost sm" data-act="person">Talk to a person</button>`);
-  const collapsed = `<div class="cmin"><button type="button" class="cmin-pill" data-act="expand" aria-expanded="false" aria-label="Show the reply panel"><span>${hasBox ? (ch.human ? 'Reply to the Sound team member…' : 'Reply to Harbor…') : 'Choose an answer…'}</span>${opts.length ? `<small>${opts.length} suggested ${opts.length === 1 ? 'answer' : 'answers'}</small>` : ''}</button>${S.voice.supported && !busy ? `<button type="button" class="mic" data-act="mic" aria-label="Tap to speak" title="Tap to speak"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path></svg></button>` : ''}</div>`;
-  const foot = o ? (ch.ftc && ch.ftc.step !== 'done' ? ftcFootHTML(ch) : memberFbHTML(ch) + `<button class="btn alt block" data-act="reset">Replay this scenario</button>`) : min ? collapsed : reply;
+  const shotChip = ch.shotOffer && !(ch.shots || []).length && !busy && S.live.shot ? '<button class="choice" data-act="shot">📷 Send a screenshot</button>' : '';
+  const reply = mic.hint + (hasBox ? box : busy ? '' : `<div class="microw">${mic.btn}${shotBtn(ch.shotBusy)}</div>`) + shotChip + chips + (ch.human || opts.some((x) => x.end === 'human') ? '' : `<button class="btn ghost sm" data-act="person">Talk to a person</button>`);
+  const collapsed = `<div class="cmin"><button type="button" class="cmin-pill" data-act="expand" aria-expanded="false" aria-label="Show the reply panel"><span>${hasBox ? (ch.human ? 'Reply to the Sound team member…' : 'Reply to Harbor…') : 'Choose an answer…'}</span>${opts.length ? `<small>${opts.length} suggested ${opts.length === 1 ? 'answer' : 'answers'}</small>` : ''}</button>${S.voice.supported && !busy ? `<button type="button" class="mic" data-act="mic" aria-label="Tap to speak" title="Tap to speak">${MIC_ICON}</button>` : ''}</div>`;
+  const foot = o ? (ch.ftc && ch.ftc.step !== 'done' ? ftcFootHTML(ch) : mfaHTML(ch) + (ch.mfa && ch.mfa.done ? memberFbHTML(ch) : '') + `<button class="btn alt block" data-act="reset">Replay this scenario</button>`) : min ? collapsed : reply;
   const oc = o ? `<div class="outcome ${o.tone}${ch.outcomeSeen ? '' : ' fresh'}"><b>${o.title}</b><br>${o.text}</div>` : ''; if (o) ch.outcomeSeen = true;
   return { html: `${bar('Harbor · security analyst')}<div class="body" id="chatbody">${msgs}${oc}${after}${typingDots}</div><div class="foot${footCls}${min ? ' min' : ''}">${foot}</div>` };
 }
@@ -679,12 +752,13 @@ function onSpoken(text) {
   choose(idx, 'voice'); render();
 }
 /** The mic as parts: the round button (placed right of Send when there is a reply box), the hint under it, or a note when voice is unavailable. */
+const MIC_ICON = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path></svg>';
 function micParts(busy) {
   const ch = S.chat; if (!ch || ch.outcome) return { btn: '', hint: '' };
   if (!S.voice.supported) return { btn: '', hint: '<p class="small micnote">' + (SR && S.voice.framed ? 'The microphone is switched off inside this preview. Open the prototype in its own browser tab to talk to Harbor, or tap an option.' : 'Talking to Harbor works in Chrome and Safari. You can tap or type instead.') + '</p>' };
   const on = S.voice.on, label = on ? 'Listening. Tap to stop' : 'Tap to speak';
   const hint = S.voice.err ? (VOICE_ERR[S.voice.err] || 'Voice stopped. Tap to try again, or type instead.') : on ? (S.voice.interim || 'Go ahead, I\'m listening…') : (ch.live || ch.human ? '' : busy ? '' : 'Tap and say it in your own words.');
-  return { btn: `<button type="button" class="mic${on ? ' on' : ''}" data-act="mic" aria-pressed="${on}" aria-label="${label}" title="${label}" ${busy ? 'disabled' : ''}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path></svg></button>`,
+  return { btn: `<button type="button" class="mic${on ? ' on' : ''}" data-act="mic" aria-pressed="${on}" aria-label="${label}" title="${label}" ${busy ? 'disabled' : ''}>${MIC_ICON}</button>`,
     hint: hint ? `<div class="hear" id="hear" aria-live="polite">${esc(hint)}</div>` : '' };
 }
 
@@ -798,7 +872,7 @@ function memberHTML() {
     </section></div>`;
 }
 
-/* ---------- employee console ---------- */
+/* ---------- security analyst panel ---------- */
 const COACH = {
   ATO: ['Did you change your password, email or phone today?', 'Did you tap a link in a text or enter a code on a website?', 'Verify identity with details on file from before the change, not details given today.'],
   RAMP: ['How did you meet this person? Have you spoken on live video or met in person?', 'Has the amount they ask for been growing?', 'Have you been able to withdraw money from that platform?'],
@@ -836,8 +910,9 @@ function composerHTML(k) {
   const rec = k && recOf(k.mid), ch = rec && rec.chat;
   if (!k || !ch) return k ? '<p class="small muted" style="margin:8px 0 0">The member has not opened the chat yet. You can take over once they do.</p>' : '';
   if (ch.outcome) return '<p class="small muted" style="margin:8px 0 0">This conversation has ended.</p>';
-  if (!ch.human) return (ch.joinReq && !ch.joinReq.answered ? '<button class="btn sm block jr-pulse" data-act="takeover" style="margin-top:8px">🙋 Join chat (Harbor asked)</button>' : '<button class="btn sm block" data-act="takeover" style="margin-top:8px">Take over the chat</button>') + '<p class="small muted" style="margin:6px 0 0">Harbor stays in charge until you do. The member will see that a Sound team member joined.</p>';
-  return `<form class="empbox" data-act="empform"><textarea id="empin" rows="2" maxlength="600" placeholder="Write to ${esc(memberName(k.mid))}…" aria-label="Message to the member">${esc(S.ui.empDraft || '')}</textarea>
+  const askShot = S.live.shot && !(ch.shots || []).length && !ch.shotOffer ? '<button type="button" class="linkbtn" data-act="askshot" style="margin-top:6px">📷 Ask the member for a screenshot</button>' : '';
+  if (!ch.human) return askShot + (ch.joinReq && !ch.joinReq.answered ? '<button class="btn sm block jr-pulse" data-act="takeover" style="margin-top:8px">🙋 Join chat (Harbor asked)</button>' : '<button class="btn sm block" data-act="takeover" style="margin-top:8px">Take over the chat</button>') + '<p class="small muted" style="margin:6px 0 0">Harbor stays in charge until you do. The member will see that a Sound team member joined.</p>';
+  return `${S.live.shot && !(ch.shots || []).length ? '<button type="button" class="linkbtn" data-act="askshot">📷 Ask for a screenshot</button>' : ''}<form class="empbox" data-act="empform"><textarea id="empin" rows="2" maxlength="600" placeholder="Write to ${esc(memberName(k.mid))}…" aria-label="Message to the member">${esc(S.ui.empDraft || '')}</textarea>
     <div class="empbtns"><button class="btn sm" type="submit">Send</button><button type="button" class="btn alt sm" data-act="handback">Hand back to Harbor</button></div></form>`;
 }
 function takeOver(on) {
@@ -845,7 +920,7 @@ function takeOver(on) {
   ch.human = on; ch.draining = false; ch.typing = false; if (on) { ch.queue = []; if (ch.live) ch.live.pending = false; }
   if (on && ch.joinReq && !ch.joinReq.answered) { ch.joinReq.answered = true; track('join_answered', ch, { why: ch.joinReq.why }, Date.now() - ch.joinReq.at); }
   ch.msgs.push({ f: 'sys', h: on ? 'A Sound team member has joined this chat.' : 'Harbor is back in the chat.' });
-  const note = on ? 'Took over the chat from Harbor' : 'Handed the chat back to Harbor'; (k.acts ||= []).push(note); k.log.push(note); k.status = on ? 'Employee in the chat' : 'In conversation';
+  caseNote(k, on ? 'Took over the chat from Harbor' : 'Handed the chat back to Harbor'); k.status = on ? 'Employee in the chat' : 'In conversation';
   const cid = caseId(ch); if (cid) post('/api/cases/' + cid + '/takeover', { on }).catch(() => {});
   if (!on) { S.ui.empFocus = false; if (ch.queue.length) drain(ch); }
 }
@@ -890,8 +965,10 @@ function syncOne(rec) {
   const sc = scen(rec.id), mid = sc.mid, p = rec.phone.step, ch = rec.chat;
   if (p === 'review' || p === 'sending') { delete S.cases[mid]; return; }                         // the payment has not been sent in the demo yet: nothing is held
   const dec = scenarioDecision(sc);
-  let k = S.cases[mid]; if (dec.level !== 'hold' && !k) return;           // pass-throughs and light checks only get a case when their chat ends
-  if (!k) { k = S.cases[mid] = { mid, who: sc.name, tag: sc.tag, dec, status: 'Awaiting member response', answers: [], key: null, updated: 'Just now', msgs: [], stage: 'paused', log: [`Harbor paused ${money(dec.amt)} ${railWord(dec.rail)}`] }; }
+  let k = S.cases[mid]; if (dec.level === 'none' && !k) return;           // a payment that went through has no case
+  if (dec.level === 'confirm' && !k && !(p === 'chat' && ch)) return;     // a light check gets a case once its chat starts, so staff can follow, take over and answer a join request
+  if (!k) { k = S.cases[mid] = { mid, who: sc.name, tag: sc.tag, dec, status: 'Awaiting member response', answers: [], key: null, updated: 'Just now', msgs: [], stage: dec.level === 'hold' ? 'paused' : 'notified',
+    log: [dec.level === 'hold' ? `Harbor paused ${money(dec.amt)} ${railWord(dec.rail)}` : `Harbor asked a light question about ${money(dec.amt)} ${railWord(dec.rail)}`] }; }
   const v = S.live.backend && rec.be.view; if (v && v.member_id === mid) k.real = v;           // the real pipeline run (analyst, tags, timings) stays attached after the chat ends
   if (k.stage === 'done') return;
   if ((p === 'lock' || p === 'chat') && stageOf(k) < 2) { k.stage = 'notified'; k.log.push(`Check-in sent (${ctxOf(sc, dec).ato ? 'SMS to the phone on file before the change' : 'app notification'})`); }
@@ -904,6 +981,7 @@ function syncOne(rec) {
 }
 function stateLine(k) {
   if (k.key && OUTCOMES[k.key]) return OUTCOMES[k.key].status + '.';
+  if (k.dec.level === 'confirm') return 'Light check: the payment waits for the member\'s answer. ' + (stageOf(k) >= 3 ? 'They are talking with Harbor now.' : 'Harbor has asked them a quick question.');
   return ['', 'Payment is paused. Harbor is about to message the member.', 'Payment is paused. The check-in has gone out. With no reply in 10 minutes it comes to you.', 'Payment is paused. The member is talking with Harbor now.'][Math.min(stageOf(k), 3)] || 'Payment is paused.';
 }
 function openingLines(k) {
@@ -932,7 +1010,7 @@ const STEP_ICON = {
   feed: '<path d="M4 6h16M4 12h11M4 18h7"/>', flag: '<path d="M5 21V4h11l-1.5 4L16 12H5"/>', rules: '<path d="M12 3l7 3v5c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
   pause: '<path d="M9 5v14M15 5v14"/>', tag: '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="7.5" r="1.3"/>', search: '<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/>',
   msg: '<path d="M4 5h16v11H9l-5 4z"/>', person: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/>', spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6"/>',
-  pin: '<path d="M12 21s-7-6-7-11a7 7 0 0114 0c0 5-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>', next: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  pin: '<path d="M12 21s-7-6-7-11a7 7 0 0114 0c0 5-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>', shot: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>', next: '<path d="M5 12h14M13 6l6 6-6 6"/>',
 };
 const STEP_ACTOR = { 'Rules engine': 'rules', Pipeline: 'pipe', Model: 'model', Analyst: 'model', Harbor: 'harbor', Member: 'member', You: 'you' };
 const SHORT_EVENT = { 'Password Reset': 'reset', 'Email Change': 'email', 'Phone Change': 'phone', 'Address Change': 'address', 'Recipient Added': 'new recipient', 'Branch Visit': 'branch visit', 'Contact Center Call': 'call' };
@@ -954,8 +1032,8 @@ function stepsFor(k) {
       (d.suppress.length ? chip('green', 'look-alike: lowered', d.suppress.join(' ')) : ''),
     b: `${money(d.amt)} ${esc(railWord(d.rail))}${d.rs === 'New' ? ' to a new recipient' : ''}. ${d.rules.length === 1 ? 'One rule' : d.rules.length + ' rules'} matched, so the result is <b>${d.level === 'hold' ? 'pause the payment' : 'a light check'}</b>.${checks}${d.suppress.length ? `<div class="small">Look-alike check: ${d.suppress.map(esc).join(' ')}</div>` : ''}` });
   const rl = k.real, tm = rl && rl.timings;
-  steps.push({ id: 'held', ic: 'pause', a: 'Pipeline', t: 'Payment held', s: 'done', time: tm && tm.alerted ? new Date(tm.alerted).toLocaleTimeString() : '',
-    g: (tm && tm.decide_ms != null ? chip('grey', `⚡ ${tm.decide_ms} ms`) : '') + chip('grey', 'pending, not sent') + chip('grey', 'alert → Kafka'),
+  steps.push({ id: 'held', ic: 'pause', a: 'Pipeline', t: d.level === 'hold' ? 'Payment held' : 'Light check', s: 'done', time: tm && tm.alerted ? new Date(tm.alerted).toLocaleTimeString() : '',
+    g: (tm && tm.decide_ms != null ? chip('grey', `⚡ ${tm.decide_ms} ms`) : '') + chip('grey', d.level === 'hold' ? 'pending, not sent' : 'waits for the member\'s answer') + chip('grey', 'alert → Kafka'),
     b: (tm ? `<div class="small"><b>Real run:</b> rules decided in ${tm.decide_ms} ms · alert <code>${esc(rl.alert ? rl.alert.alert_id : '')}</code> saved to Postgres and published to Kafka.</div>` : '') + 'The payment stays pending instead of completing, which buys a window of minutes. The alert is saved, then published for the agent. Each member gets one case, so a second alert joins this one instead of sending another message.' });
   if (rl && rl.note) steps.push({ id: 'tag', ic: 'tag', a: 'Model', t: 'Event tagged', s: 'done',
     g: chip(riskCls(rl.note.risk), rl.note.tag.replace(/_/g, ' ')) + chip(riskCls(rl.note.risk), rl.note.risk + ' risk') + `<span class="muted small">${esc(rl.note.source === 'llm' ? '3B model' : 'rule tag')}${rl.note.latency_ms == null ? '' : ' · ' + (rl.note.latency_ms / 1000).toFixed(1) + ' s'} · advisory</span>`,
@@ -971,6 +1049,11 @@ function stepsFor(k) {
     g: wayChip + (tm && tm.compose_source ? chip(tm.compose_source === 'llm' ? 'green' : 'warn', tm.compose_source === 'llm' ? `✍ model · ${(tm.compose_ms / 1000).toFixed(1)} s` : '✍ template', tm.compose_fallback || '') : '') + (first ? quote(first.t.replace(/^Hi[^.]*\.\s*/, ''), 70) : ''),
     b: `${way} It never asks for a password or code.<div class="quote">${preview}</div>${tm && tm.compose_source ? `<div class="small muted">Written by ${tm.compose_source === 'llm' ? esc(tm.compose_model || 'the model') : 'the safe template (' + esc(tm.compose_fallback || 'model too slow') + ')'} in ${tm.compose_ms} ms${tm.delivered ? ', delivered ' + new Date(tm.delivered).toLocaleTimeString() : ''}.</div>` : ''}` }
     : { id: 'checkin', ic: 'msg', a: 'Harbor', t: 'Check-in next', s: 'wait', g: wayChip, b: `Next, Harbor messages the member. ${way}<div class="quote">${preview}</div>` });
+  const shots = ((recOf(k.mid) || {}).chat || {}).shots || [];
+  for (const [n, r] of shots.entries()) { const f = r.findings, d = r.decision;
+    steps.push({ id: 'shot' + n, ic: 'shot', a: 'Member', t: 'Screenshot sent', s: 'done', time: new Date(r.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+      g: chip(riskCls(d.risk), d.risk + ' risk') + chip('grey', (KIND_LABEL[f.kind] || 'screenshot') + (f.claims_to_be || f.sender ? ' · ' + (f.claims_to_be || f.sender) : '')) + d.flags.slice(0, 3).map((x) => chip(riskCls(d.risk), x)).join(''),
+      b: `<div class="shotrow"><img class="shotthumb" src="${r.thumb}" alt="The member's screenshot"><div>${esc(f.summary || '')}${f.phone_numbers.length || f.emails.length || d.links_defanged.length ? `<div class="small" style="margin-top:6px"><b>Contacts in it:</b> ${[...f.phone_numbers, ...f.emails, ...d.links_defanged].map(esc).join(', ')}<span class="muted"> (links shown defanged: don't open)</span></div>` : ''}${f.visible_text ? `<div class="quote small">${esc(f.visible_text.slice(0, 400))}</div>` : ''}<div class="small muted">Read by ${esc(r.model)} in ${(r.ms / 1000).toFixed(1)} s. The image is not stored; findings are kept with fingerprint ${esc(r.sha256.slice(0, 10))}.</div></div></div>` }); }
   const mine = (k.msgs || []).filter((m) => m.f === 'me'), said = mine.length ? mine.map((m) => m.t) : k.answers.map((x) => x.a);
   if (st < 2) steps.push({ id: 'member', ic: 'person', a: 'Member', t: 'Not contacted yet', s: 'todo', g: '', b: 'Waiting for the check-in to go out.' });
   else if (said.length) steps.push({ id: 'member', ic: 'person', a: 'Member', t: 'Member replied', s: 'done', g: said.slice(0, 2).map((t) => quote(t, 48)).join('') + (said.length > 2 ? `<span class="muted small">+${said.length - 2} more</span>` : ''),
@@ -1008,7 +1091,7 @@ function txnHTML(k) {
   const d = k.dec, ev = txnEvent(k), cash = d.rail === 'Cash';
   const to = cash ? `<b>Cash withdrawal</b><div>Handed over at the branch</div><div class="small muted">No recipient account</div>` :
     `<b>${esc(ev.rid || 'Recipient')}</b><div>${d.rs === 'New' ? 'New recipient' : 'Existing recipient'}</div><div class="small muted">${ev.rage != null ? (ev.rage === 0 ? 'Added today' : 'Added ' + ev.rage + ' days ago') : ''}</div>`;
-  const facts = [['Method', esc(railWord(d.rail).replace(/^./, (m) => m.toUpperCase())) + (ev.ch ? ' · ' + esc(ev.ch) : '')], ['Started', fmt(d.t)], ['Payment ID', esc(d.pid || ev.pid || '–')], ['Payment status', k.key === 'cancelled' ? 'Cancelled' : k.key === 'release_light' ? 'Released' : 'Held by Harbor'],
+  const facts = [['Method', esc(railWord(d.rail).replace(/^./, (m) => m.toUpperCase())) + (ev.ch ? ' · ' + esc(ev.ch) : '')], ['Started', fmt(d.t)], ['Payment ID', esc(d.pid || ev.pid || '–')], ['Payment status', k.key === 'cancelled' ? 'Cancelled' : k.key === 'release_light' ? 'Released' : d.level === 'confirm' ? 'Waiting for the member (light check)' : 'Held by Harbor'],
     ['Compared with usual', ev.ratio != null ? ev.ratio.toFixed(1) + 'x' + (ev.vs && ev.vs !== 'Not Applicable' ? ' · ' + esc(ev.vs.toLowerCase()) : '') : '–'], ['Payment speed', ev.vel && ev.vel !== 'Not Applicable' ? esc(ev.vel.toLowerCase()) : '–']];
   return `<div class="txn"><div class="txn-side"><div class="k">From</div><b>${esc(memberName(k.mid))}</b><div>Checking account</div><div class="small muted">Member ${esc(k.mid)}${ev.bal != null ? ' · balance ' + money(ev.bal) : ''}</div></div>
     <div class="txn-mid"><div class="amt">${money(d.amt)}</div><div class="arrow" aria-hidden="true">→</div></div>
@@ -1123,15 +1206,6 @@ function feedFor(sc, upto) {
   }
   return out;
 }
-function decideCard(dec, tm) {
-  const fired = dec.trace.filter((r) => r.fired), missed = dec.trace.filter((r) => !r.fired);
-  const why = (r) => { const f = r.checks.find((c) => !c.pass); return f ? `<span class="small muted">${esc(TRIGGER[r.id] || r.id)}: ${esc(f.label)} <i>(${esc(String(f.value))})</i></span>` : ''; };
-  return `<p><b>${money(dec.amt)} ${esc(railWord(dec.rail))}</b>${dec.rs === 'New' ? ' to a new recipient' : ''} arrived. The rules ran ${tm && tm.decide_ms != null ? `in <b>${tm.decide_ms} ms</b>` : 'instantly'}, no model involved. Result: ${levelChip(dec.level)}</p>
-    ${fired.map((r) => `<div class="chk"><b>${esc(TRIGGER[r.id] || r.id)}</b>${r.checks.map((x) => `<span class="${x.pass ? 'ok' : 'no'}"><span aria-hidden="true">${x.pass ? '✔' : '✖'}</span> ${esc(x.label)} <i>${esc(String(x.value))}</i></span>`).join('')}</div>`).join('')}
-    ${dec.suppress.map((x) => `<div class="why" style="border-color:var(--green);background:var(--green-soft)"><b>Look-alike check lowered it:</b> ${esc(x)}</div>`).join('')}
-    ${fired.length ? '' : `<p class="small muted">${noFlagExplain(dec.mid || '', dec)}</p>`}
-    ${missed.length ? `<div class="small muted" style="margin-top:8px">Did not match:</div><div class="miss">${missed.map(why).join('<br>')}</div>` : ''}`;
-}
 const FEED_ROWS = 4;
 /** Sizes the live-events box to its last 4 rows (rows differ in height) and keeps the reader's place across re-renders:
  *  at the bottom it follows new events, scrolled up it stays where it was. */
@@ -1162,14 +1236,18 @@ function archSVG() {
   const topic = (x, y, w, h, name, sub) => `<g><rect class="dg-box dg-topic" x="${x}" y="${y}" width="${w}" height="${h}" rx="${h / 2 > 22 ? 12 : h / 2}"/>${T(x + w / 2, y + 22, name, 'dg-t', 'middle')}${sub ? T(x + w / 2, y + 40, sub, 'dg-s', 'middle') : ''}</g>`;
   const a = (d, dash, head = true) => `<path class="dg-arrow${dash ? ' dash' : ''}" d="${d}"${head ? ' marker-end="url(#ah2)"' : ''}/>`;
   const rot = (x, y, s, deg) => T(x, y, s, 'dg-s', 'middle').replace('<text', `<text transform="rotate(${deg} ${x} ${y})"`);
-  return `<svg viewBox="0 0 1440 1100" class="dg" role="img" aria-label="Harbor architecture: the browser app calls one API server, which streams a story into Kafka; the rules scorer decides alerts, a small-model tagger and an analyst add advisory context in Postgres, the agent opens one case per member and messages them, an employee can take over, and a retro job re-enters findings. Models run on Ollama.">
+  return `<svg viewBox="0 0 1440 1170" class="dg" role="img" aria-label="Harbor architecture: the browser app calls one gateway, which routes to the agent service and the screenshot service. The agent streams a story into Kafka; the rules scorer decides alerts, a small-model tagger and an analyst add advisory context in Postgres, the agent opens one case per member and messages them, an employee can take over, and a retro job re-enters findings. Models run on Ollama.">
   <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" class="dg-head"/></marker></defs>
-  <g><rect class="dg-box dg-ok" x="20" y="10" width="1400" height="70" rx="12"/>${T(34, 36, 'Browser app  (localhost:8787, served by the API server)', 'dg-t')}
-    ${T(34, 60, 'Member app: pick a story, Send payment, chat by voice or text   ·   Employee console: case, live events, take over the chat, actions   ·   Dev tools: simulator, architecture, live pipeline, model inspector')}</g>
-  ${a('M310 80V123')}${T(322, 104, 'via the API server: story history, then the payment')}
-  ${a('M1230 80V108')}${T(1242, 104, 'chat · take over · actions')}
+  <g><rect class="dg-box dg-ok" x="20" y="10" width="1400" height="70" rx="12"/>${T(34, 36, 'Browser app  (localhost:8787, through the gateway)', 'dg-t')}
+    ${T(34, 60, 'Member app: pick a story, Send payment, chat by voice or text   ·   Security analyst panel: case, live events, take over the chat, actions   ·   Dev tools: simulator, architecture, live pipeline, model inspector')}</g>
+  ${a('M720 80V94')}
+  <g><rect class="dg-box dg-ok" x="20" y="96" width="1400" height="50" rx="12"/>${T(34, 118, 'Gateway   :8787   (the one public port)', 'dg-t')}${T(34, 137, 'serves the app  ·  /api/screenshot/* → screenshot service :8791  ·  every other /api/* → agent service :8790  ·  rate limits, size limits, CORS, health')}</g>
+  ${a('M1230 146V178')}${T(1242, 168, '/api/* → agent :8790')}
+  ${a('M310 146V193')}${T(322, 172, 'story events, then the payment (the agent publishes them)')}
+  ${a('M12 146V630H18')}${rot(26, 450, '/api/screenshot/*', -90)}
+  <g transform="translate(0,70)">
 
-  ${box(20, 110, 180, 130, '', 'Event sources', ['core banking · mobile', 'online · branch · call', 'center. Demo: the API', 'server or replayer.js'])}
+  ${box(20, 110, 180, 130, '', 'Event sources', ['core banking · mobile', 'online · branch · call', 'center. Demo: the agent', 'service or replayer.js'])}
   ${a('M200 165H228')}
   ${topic(230, 125, 160, 80, 'events.raw', 'key = member_id')}${T(310, 224, '6 partitions', 'dg-s', 'middle')}${T(310, 242, 'group harbor-scorer', 'dg-s', 'middle')}
   ${topic(230, 300, 160, 56, 'events.dlq', 'from any consumer')}${T(310, 376, 'after 3 failed tries;', 'dg-s', 'middle')}${T(310, 394, 'redrive-dlq.js re-sends', 'dg-s', 'middle')}
@@ -1189,7 +1267,7 @@ function archSVG() {
   ${a('M660 618H700V740H708')}
 
   <g><rect class="dg-box" x="710" y="250" width="250" height="390" rx="12"/>${T(724, 274, 'Postgres 16   :5439', 'dg-t')}${T(724, 294, 'container harbor-postgres')}
-    ${['events · decisions · member_state', '   ← scorer, idempotent', 'alerts (outbox) ← scorer', 'event_notes · tags · review_queue', '   ← tagger', 'analyses ← analyst', 'cases · case_alerts · messages', '   ← agent + API', 'retro_findings ← retro (deduped)', 'members · ground_truth ← seed.js', 'v_rule_outcomes (view, tuning)', 'feedback · interactions ← the app'].map((l, i) => T(724, 322 + i * 21, l)).join('')}
+    ${['events · decisions · member_state', '   ← scorer, idempotent', 'alerts (outbox) ← scorer', 'event_notes · tags · review_queue', '   ← tagger', 'analyses ← analyst', 'cases · case_alerts · messages', '   ← agent + API', 'retro_findings ← retro (deduped)', 'members · ground_truth ← seed.js', 'v_rule_outcomes (view, tuning)', 'feedback · interactions · ftc_reports', '   ← agent', 'screenshots ← screenshot service'].map((l, i) => T(724, 322 + i * 21, l)).join('')}
     ${T(724, 622, 'the full history, alerted or not')}</g>
   ${box(710, 700, 250, 150, 'dg-teal', 'analyst.js', ['qwen2.5:14b · one run per member', 'reads tagged history, rule', '   findings, look-alike context', 'may start a light check-in; code', '   gates it (cooldown 5 min)'], 'LLM')}
   ${a('M835 700V643', true)}${T(845, 676, 'scans', 'dg-s')}
@@ -1198,7 +1276,7 @@ function archSVG() {
 
   ${topic(1000, 110, 34, 190, '', '')}${rot(1017, 205, 'alerts.risk  ·  6 partitions', -90)}${T(1017, 100, 'group harbor-agent', 'dg-s', 'middle')}
   ${a('M1034 160H1078')}
-  ${box(1080, 110, 300, 320, 'dg-teal', 'agent-service.js   :8787', ['app + API server; consumes alerts.risk', 'one open case per member; rate', '   limit (not for takeover)', 'takeover: SMS to the pre-change phone', 'first message: lib/compose.js,', '   LLM + code checks, else template', 'chat: harbor/agent.js; code adds', '   safety lines, picks the buttons', 'staff take over / hand back', 'case timer 5 s: no reply in 10 min', '   → escalate to a person', 'routes: /api/demo/*, /api/cases/*,', '   /api/console, /api/chat, /api/traces'], 'LLM')}
+  ${box(1080, 110, 300, 320, 'dg-teal', 'agent-service.js   :8790', ['behind the gateway; consumes alerts.risk', 'one open case per member; rate', '   limit (not for takeover)', 'takeover: SMS to the pre-change phone', 'first message: lib/compose.js,', '   LLM + code checks, else template', 'chat: harbor/agent.js; code adds', '   safety lines, picks the buttons', 'staff take over / hand back', 'case timer 5 s: no reply in 10 min', '   → escalate to a person', 'routes: /api/demo/*, /api/cases/*,', '   /api/console, /api/chat, /api/traces'], 'LLM')}
   ${a('M1080 380H962', true)}${T(1036, 372, 'reads / writes', 'dg-s', 'middle')}
   ${a('M1230 430V498')}
   ${topic(1130, 500, 200, 56, 'notifications.out', 'group harbor-delivery')}
@@ -1208,14 +1286,18 @@ function archSVG() {
   ${box(1130, 680, 200, 70, 'dg-ok', 'Member', ['replies in the chat'])}
   ${a('M1130 715H1065V415H1078', true)}
   ${a('M1380 300H1410V835H1382')}${rot(1425, 560, 'escalate: asked for a person, no reply, takeover', 90)}
-  ${box(1080, 780, 300, 110, 'dg-ok', 'Employee console', ['case summary, live events, transaction', 'analyst read and model log', 'take over / hand back the chat'])}
-  ${box(1080, 910, 300, 100, 'dg-arm', 'Ollama   :11434   (on the host)', ['qwen2.5:3b: tagger', 'qwen2.5:14b: analyst, first message,', '   chat, retro sentence'])}
+  ${box(1080, 780, 300, 110, 'dg-ok', 'Security analyst panel', ['case summary, live events, transaction', 'analyst read and model log', 'take over / hand back the chat'])}
+  ${box(1080, 910, 300, 100, 'dg-arm', 'Ollama   :11434   (on the host)', ['qwen2.5:3b: tagger', 'qwen2.5:14b: analyst, messages, chat', 'qwen2.5vl:7b: screenshots'])}
 
+  ${box(20, 500, 370, 120, 'dg-teal', 'screenshot.js   :8791', ['qwen2.5vl:7b reads what the member sends;', 'code decides flags, risk and next steps;', 'image never stored, findings → Postgres'], 'LLM')}
+  ${a('M390 572H708')}${T(666, 566, 'writes', 'dg-s')}
+  ${a('M390 610H410V960H1078')}${T(744, 952, 'reads the image with qwen2.5vl:7b', 'dg-s', 'middle')}
   <g><rect class="dg-box" x="20" y="700" width="370" height="210" rx="12"/>${T(34, 726, 'Design rules', 'dg-t')}
     ${['An alert never waits on an LLM.', 'Key = member_id: one member, one ordered', '   partition, so stateful rules stay correct.', 'At-least-once delivery + idempotent keys', '   (event_id, alert_id): replays are safe.', 'LLMs are advisory. They write notes and', '   messages; rules and code decide actions.', 'Every failure lands in the DLQ with a redrive.'].map((l, i) => T(34, 752 + i * 20, l)).join('')}</g>
 
   <g><rect class="dg-box" x="20" y="1030" width="1400" height="62" rx="12"/>${T(34, 1054, 'Where it runs', 'dg-t')}${T(160, 1054, 'Teal pills: Kafka topics on harbor-redpanda (Docker, localhost:19092)   ·   Postgres: harbor-postgres (Docker, localhost:5439)')}
-    ${T(160, 1076, 'Node processes: backend/scripts/start-all.sh, logs in backend/.logs   ·   Ollama on the host   ·   every model call is logged to harbor/.traces and shown in the Model inspector')}</g>
+    ${T(160, 1076, 'Gateway :8787 is the only public port (agent :8790, screenshots :8791 internal)   ·   Node processes: start-all.sh, logs in backend/.logs   ·   model calls: harbor/.traces')}</g>
+  </g>
   </svg>`;
 }
 S.pipe = { data: null, cases: [], sel: null, detail: null, err: null, draft: '', busy: false, timer: null };
@@ -1287,7 +1369,7 @@ function feedbackHTML(rows, ev) {
     ${rows.length ? `<div class="tablewrap"><table><thead><tr><th>Member</th><th>Rating</th><th>Outcome</th><th>Comment</th><th>Agent version</th></tr></thead><tbody>${list}</tbody></table></div>` : '<p class="muted small">No feedback yet.</p>'}</section>`;
 }
 function archHTML() {
-  return `<div class="card"><h2>System architecture</h2><p class="muted">The browser app talks to one API server. Choosing a story streams that member's events into Kafka; Send payment sends the trigger event. Two paths then process the same stream. The <b>fast path</b> decides alerts with deterministic rules in about a millisecond. The <b>slow path</b> tags every event with a small model that can read and extend a tag table; it can only queue a human review. When something notable is tagged, an <b>analyst agent</b> scans Postgres for the member's tagged history and may recommend a light check-in, behind safety checks in code. Alerts reach a notification agent that owns the conversation. A retro cron re-enters findings through the same topic. <b>Every model output passes code checks before it matters</b>: data checks cap the tagger's risk, the analyst can only recommend, the first message is repaired or replaced by a template, and each chat reply is shaped by code (safety lines, one question, buttons chosen from the signals). Staff wording never reaches the member. The hosted GitHub Pages copy has no backend: it runs the same rules in the browser.</p>${archSVG()}</div>`;
+  return `<div class="card"><h2>System architecture</h2><p class="muted">The browser app talks to one gateway (:8787), which serves the app and routes each call to the agent service or the screenshot service. Choosing a story streams that member's events into Kafka; Send payment sends the trigger event. Two paths then process the same stream. The <b>fast path</b> decides alerts with deterministic rules in about a millisecond. The <b>slow path</b> tags every event with a small model that can read and extend a tag table; it can only queue a human review. When something notable is tagged, an <b>analyst agent</b> scans Postgres for the member's tagged history and may recommend a light check-in, behind safety checks in code. Alerts reach a notification agent that owns the conversation. A retro cron re-enters findings through the same topic. <b>Every model output passes code checks before it matters</b>: data checks cap the tagger's risk, the analyst can only recommend, the first message is repaired or replaced by a template, and each chat reply is shaped by code (safety lines, one question, buttons chosen from the signals). Staff wording never reaches the member. The hosted GitHub Pages copy has no backend: it runs the same rules in the browser.</p>${archSVG()}</div>`;
 }
 
 /* ---------- notes ---------- */
@@ -1350,7 +1432,7 @@ document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && S.ui.demoOpen) { S.ui.demoOpen = false; render(); const b = document.querySelector('.cfgbtn'); if (b) b.focus(); } });
 document.addEventListener('click', (ev) => {
   const t = ev.target.closest('[data-act],[data-tab]');
-  if (!t && ev.target.closest('#chatbody') && S.chat && !S.chat.outcome && !S.ui.footMin) { S.ui.footMin = true; render(); return; }   // tap the conversation: collapse the reply panel
+  if (!t && !ev.target.closest('a') && ev.target.closest('#chatbody') && S.chat && !S.chat.outcome && !S.ui.footMin) { S.ui.footMin = true; render(); return; }   // tap the conversation: collapse the reply panel
   if (!t) return;
   if (t.dataset.tab) { S.ui.devOpen = false; S.tab = t.dataset.tab; if (S.tab === 'console') { const w = (S.ui.pingSel && recOf(S.ui.pingSel)) || waitingJoin(); if (w) S.sel = w.mid; S.ui.pingSel = null; S.unread = 0; const tb = document.querySelector('[data-tab=console]'); if (tb) tb.classList.remove('lit'); const pg = $('#ping'); if (pg) pg.hidden = true; } if (S.tab === 'pipe') pipeStart(); return render(); }
   const a = t.dataset.act;
@@ -1375,6 +1457,7 @@ document.addEventListener('click', (ev) => {
   else if (a === 'qpick') { S.sel = t.dataset.id; S.ui.qOpen = false; S.ui.qText = ''; }
   else if (a === 'coll') { S.ui[t.dataset.k] = !S.ui[t.dataset.k]; if (t.dataset.k === 'log' && S.ui.log) refreshLog(); }
   else if (a === 'rawt') S.ui.raw[t.dataset.id] = !S.ui.raw[t.dataset.id];
+  else if (a === 'mfa') { if (S.chat) memberMfa(S.chat, t.dataset.v); }
   else if (a === 'mfb') S.chat.fb.score = +t.dataset.v;
   else if (a === 'mfbsend') { memberFeedback(S.chat); return; }
   else if (a === 'efb' || a === 'efbredo') { const k = S.cases[S.sel]; if (!k) return; k.efb = a === 'efb' ? Object.assign(k.efb, { score: +t.dataset.v }) : { text: k.efb.text }; }
@@ -1383,25 +1466,24 @@ document.addEventListener('click', (ev) => {
   else if (a === 'ftc' || a === 'ftccopy' || a === 'ftcopen') {
     const k = S.cases[S.sel]; if (!k) return; const ui = (S.ui.ftc ||= {})[k.mid] ||= {}, rec = recOf(k.mid), m = rec && rec.chat && rec.chat.ftc, d = (m && m.draft) || ui.draft;
     if (a === 'ftc') { ui.busy = true; ui.err = ''; ftcDraft(k, 'assisted', m ? m.answers : {}).then((x) => { ui.draft = x; }).catch(() => { ui.err = 'Could not draft: the server is not reachable or is running older code.'; }).finally(() => { ui.busy = false; render(); }); }
-    else if (a === 'ftcopen') { const note = 'Opened ' + d.site.name + ' to file the report with the member'; (k.acts ||= []).push(note); k.log.push(note); return; }   // the link itself opens the site
+    else if (a === 'ftcopen') { caseNote(k, 'Opened ' + d.site.name + ' to file the report with the member'); return; }   // the link itself opens the site
     else { const all = t.dataset.i === 'all', [si, j] = all ? [] : t.dataset.i.split('.').map(Number);
       const text = all ? d.sections.map(([sec, f]) => sec + '\n' + f.map(([l, v]) => '  ' + l + ': ' + v).join('\n')).join('\n\n') : d.sections[si][1][j][1];
       copyText(text).then(() => { ui.copied = all ? 'Report copied. Paste it into the form with the member.' : 'Copied: ' + d.sections[si][1][j][0]; render(); }).catch(() => { ui.copied = 'Copy failed: select the text and copy it by hand.'; render(); });
-      if (all && !ui.logged) { ui.logged = true; const note = 'Copied the FTC report to file with the member'; (k.acts ||= []).push(note); k.log.push(note);
-        const v = S.live.backend && rec && rec.be.view; if (v && v.case) post('/api/cases/' + v.case.case_id + '/action', { text: note }).catch(() => {}); }
+      if (all && !ui.logged) { ui.logged = true; caseNote(k, 'Copied the FTC report to file with the member', true); }
       return; }
   }
+  else if (a === 'shot') { const inp = $('#shotin'); if (inp) inp.click(); return; }
+  else if (a === 'askshot') { const k = S.cases[S.sel], rec = k && recOf(k.mid), ch = rec && rec.chat; if (!ch) return; offerShot(ch, ch.human ? 'emp' : 'bot');
+    caseNote(k, 'Asked the member for a screenshot'); mirror('out', 'Could you send a screenshot of the message you received?', true, ch, ch.human ? 'employee' : 'script'); }
   else if (a === 'ftcm') { if (S.chat && S.chat.ftc && S.chat.ftc.step === 'offer') memberFtcChoose(S.chat, t.dataset.v); }
   else if (a === 'ftcans') { const ch = S.chat, q = ch && ch.ftc && ch.ftc.qs[ch.ftc.i]; if (q) memberFtcAnswer(ch, q.chips[+t.dataset.i]); return; }
   else if (a === 'ftcmcopy') { const f = S.chat && S.chat.ftc; if (f && f.draft) copyText(f.draft.story).then(() => { t.textContent = 'Copied'; }).catch(() => {}); return; }
   else if (a === 'vfbsend') { const k = S.cases[S.sel]; if (k) employeeFeedback(k, 'verdict'); return; }
   else if (a === 'reset') { S.ui.demoOpen = false; resetStory(); if (S.live.backend) beginStory(R()); }
   else if (a === 'resetall') { S.ui.demoOpen = false; resetAll(); }
-  else if (a === 'cact') {
-    const k = S.cases[S.sel], ac = ACTIONS[+t.dataset.i]; if (!k || !ac) return;
-    (k.acts ||= []).push(ac.log); k.log.push(ac.log); k.status = ac.status; k.updated = 'Just now';
-    const r = recOf(S.sel), v = S.live.backend && r && r.be.view; if (v && v.case) post('/api/cases/' + v.case.case_id + '/action', { text: ac.log }).catch(() => {});
-  }
+  else if (a === 'cact') { const k = S.cases[S.sel], ac = ACTIONS[+t.dataset.i]; if (!k || !ac) return; caseNote(k, ac.log, true); k.status = ac.status; }
+
   else if (a === 'sim') S.sim.selId = t.dataset.id;
   else if (a === 'pcase') { S.pipe.sel = t.dataset.id; pipeFetch(); }
   else if (a === 'preply') { pipeReply(); return; }
@@ -1412,6 +1494,7 @@ document.addEventListener('click', (ev) => {
 document.addEventListener('change', (ev) => {
   const t = ev.target, a = t.dataset.act;
   if (a === 'planned') { S.planned = t.checked; resetStory(); if (S.live.backend) beginStory(R()); }
+  else if (t.id === 'shotin') { const file = t.files && t.files[0]; if (file) sendShot(S.chat, file); return; }
   else if (a === 'plannedAll') S.sim.plannedAll = t.checked;
   else if (a === 'ftcconsent') { const k = S.cases[S.sel]; if (k) ((S.ui.ftc ||= {})[k.mid] ||= {}).consent = t.checked; }
   else if (a === 'mode') { S.live.mode = t.value; S.live.chosen = true; }   // applies to the next chat; nothing is reset

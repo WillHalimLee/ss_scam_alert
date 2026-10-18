@@ -56,15 +56,16 @@ async function story([mid, want, text, planned]) {
 
 (async () => {
   const only = process.argv[2] && process.argv[2].split(','), s = await call('/api/status').catch(() => null);
-  if (!s || !s.j || !s.j.backend) { console.error(`No Harbor API server at ${B}. Start it with: task run`); process.exit(1); }
-  console.log(`Smoke test against ${B} (provider: ${s.j.provider || 'none'})\n`);
+  if (!s || !s.j || !s.j.backend) { console.error(`No Harbor gateway at ${B}. Start it with: task run`); process.exit(1); }
+  const gw = (await call('/api/gateway/health')).j || {};
+  console.log(`Smoke test against ${B} (provider: ${s.j.provider || 'none'}; agent ${gw.agent ? 'up' : 'DOWN'}, screenshot ${gw.screenshot ? 'up' : 'DOWN'})\n`);
   let fails = 0;
   for (const st of STORIES.filter((x) => !only || only.includes(x[0]))) {
     const [line, bad] = await story(st); fails += bad.length;
     console.log(`${bad.length ? 'FAIL' : 'ok  '}  ${line}`); for (const b of bad) console.log('        - ' + b);
   }
   for (const [u, b, code] of [['/api/pipeline', undefined, 200], ['/api/cases', undefined, 200], ['/api/review', undefined, 200], ['/api/retro', undefined, 200], ['/api/traces?limit=1', undefined, 200],
-    ['/api/demo/start', { member: 'M9999' }, 404], ['/api/cases/C-NONE/resolve', { outcome: 'x' }, 404], ['/api/chat', {}, 400], ['/api/feedback', { source: 'member', score: 7 }, 400], ['/api/feedback', undefined, 200], ['/api/interactions', undefined, 200], ['/api/feedback', { source: 'employee', kind: 'verdict', score: 4 }, 400], ['/agent.js', undefined, 404]]) {
+    ['/api/demo/start', { member: 'M9999' }, 404], ['/api/cases/C-NONE/resolve', { outcome: 'x' }, 404], ['/api/chat', {}, 400], ['/api/feedback', { source: 'member', score: 7 }, 400], ['/api/feedback', undefined, 200], ['/api/interactions', undefined, 200], ['/api/gateway/health', undefined, 200], ['/api/screenshot/health', undefined, 200], ['/api/screenshot/analyze', { image: 'data:application/pdf;base64,AA' }, 415], ['/api/feedback', { source: 'employee', kind: 'verdict', score: 4 }, 400], ['/agent.js', undefined, 404]]) {
     const x = await fetch(B + u, b === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
     if (x.status !== code) { fails++; console.log(`FAIL  ${u} -> ${x.status}, expected ${code}`); }
   }

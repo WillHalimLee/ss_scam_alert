@@ -25,7 +25,7 @@ ANTHROPIC_API_KEY=... node harbor/server.js                              # or OP
 ```
 Then open http://localhost:8787 and switch to "Live AI" in the Member app.
 
-**Full demo (`task run`)**: one command starts Docker (Redpanda/Kafka + Postgres), the scorer and tagger workers, and the API server that also serves the app on http://localhost:8787. Picking a story in the app streams that member's account history into Kafka; **Send payment** sends the trigger event, the real rules engine decides, an alert and case are stored in Postgres, the agent writes the first message, and the Employee console shows the real case. Open the Pipeline tab for counts. The hosted GitHub Pages copy has no backend and runs the same flow locally in the browser.
+**Full demo (`task run`)**: one command starts Docker (Redpanda/Kafka + Postgres), the pipeline workers, the agent and screenshot services, and the gateway that serves the app on http://localhost:8787 and routes every `/api/*` call. Screenshot reading needs the local vision model once: `ollama pull qwen2.5vl:7b` (about 6 GB). Picking a story in the app streams that member's account history into Kafka; **Send payment** sends the trigger event, the real rules engine decides, an alert and case are stored in Postgres, the agent writes the first message, and the Security analyst panel shows the real case. Open the Pipeline tab for counts. The hosted GitHub Pages copy has no backend and runs the same flow locally in the browser.
 
 Full pipeline (Docker required): see `backend/ARCHITECTURE.md`.
 

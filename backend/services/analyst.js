@@ -53,6 +53,7 @@ async function analyze(req) {
   if (verdict.start_conversation) {
     if (ctx.openCase) { action = 'recorded_only'; why = 'a case is already open: this assessment is added as context'; }
     else if (ctx.ruleAlert) { action = 'recorded_only'; why = 'the rules already alerted on this event: this assessment is added as context'; }
+    else if (lookAlike) { action = 'recorded_only'; why = 'the rules judged this a look-alike of legitimate activity: no outreach, the read is kept as context'; }
     else if (!['medium', 'high'].includes(verdict.risk)) { action = 'blocked'; why = 'risk below medium'; }
     else if (strong < 2) { action = 'blocked'; why = 'fewer than two medium/high tagged events to corroborate'; }
     else if (ctx.sinceLastStartMs != null && ctx.sinceLastStartMs < COOLDOWN_MS) { action = 'blocked'; why = 'cooldown: this member was just contacted'; }

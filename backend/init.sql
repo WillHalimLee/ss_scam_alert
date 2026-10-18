@@ -196,6 +196,21 @@ create table if not exists interactions (
 );
 create index if not exists interactions_case on interactions (case_id, created_at);
 
+-- Screenshots the member sends. The image itself is never stored: only masked findings, code decisions and a SHA-256 fingerprint.
+create table if not exists screenshots (
+  id serial primary key,
+  case_id text,
+  member_id text,
+  sha256 text not null,
+  mime text,
+  bytes int,
+  findings jsonb not null default '{}',             -- what the vision model saw: kind, sender, claims_to_be, links, money asked, asks_for, summary
+  decision jsonb not null default '{}',             -- what code decided: red flags, risk, next steps, signals, FTC hints
+  model text,
+  ms int,
+  created_at timestamptz not null default now()
+);
+
 -- FTC report drafts, once an employee confirms a scam. The member chose: assisted (Harbor asked what it did not know, an employee
 -- reviews and files with them), self (they file, with a summary to paste) or later. Never submitted automatically.
 create table if not exists ftc_reports (

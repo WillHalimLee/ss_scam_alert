@@ -181,3 +181,118 @@ All routes answered; history streams in ~2.5-3.3 s; rules decide in 2-7 ms; firs
 - In-app **Dev tools > Architecture**: tagger, agent and analyst boxes and the intro paragraph describe the code checks. Verified in Chrome: no text overflows its box.
 - In-app **Dev tools > Architecture** now has a second card, **"Flow: one story, step by step"**: 15 lifelines (member app, API server, every topic, scorer, Postgres, tagger, analyst, agent, Ollama, delivery, employee console) and 38 numbered steps in four sections (pick a story, send payment, parallel tagging/analyst, conversation/takeover/timeout). Same flow added to `ARCHITECTURE.md` as a Mermaid sequence diagram, next to the deployment diagram. Checked by rendering the SVG to PNG (the connected Chrome is on another machine and cannot reach localhost).
 - Correction after feedback: the separate flow card was removed. The **existing** Dev tools > Architecture diagram is expanded in place instead: process file names, consumer groups, workers and timers on every service; partitions and groups on every topic (`analysis.requests` is now a real topic pill); which service writes each Postgres table; Ollama and which model each service uses; a "Where it runs" legend (Docker containers and ports, start-all.sh, logs, trace log). The shared text helper now keeps continuation indents (SVG collapsed them before). Checked by rendering the SVG to PNG in quadrants.
+
+---
+
+# Round 2 (2026-10-18, afternoon): the features added since Round 1
+
+## Plan
+
+**New since Round 1** (all uncommitted except the FTC flow commit `2976226` on branch `ftc-report-flow`):
+Claude-style collapsible composer, mic beside Send, member and employee 1-5 feedback, close-out verdict, interaction log, secret masking, ask-a-person-to-join, FTC report flow (questions, agent draft, form-matched fields), screenshot service (`qwen2.5vl:7b`), API gateway (:8787 public, agent :8790, screenshots :8791), MFA tip, glanceable step timeline, 4-row live events, lock-screen preview clamp, Ollama parallel requests.
+
+**Baselines to protect**: `task test` (48/48, 7/70, byte-identical output), `task eval` (Round 1 ended at 60/60; 14/14 with the push-back case), `task smoke` (all good), every story playable in both modes.
+
+**Users and what to walk**
+| User | New surfaces to walk |
+|---|---|
+| Member | Live AI and Guided chat for all 7 stories; collapse and expand the composer; 📷 screenshot (bring it up, Harbor offers it); join-request note; MFA tip; 1-5 feedback; FTC follow-up (help / self / not now) |
+| Employee | Join banner and Join chat; takeover; ask for a screenshot; screenshot step; verdict; FTC card (copy, open); rating; timeline and live events |
+| Developer | Gateway routing, limits and health; screenshot service; Live pipeline feedback and interaction tiles; inspector traces for screenshots and FTC drafts; `task status`, `task stop`, `task smoke`, `task eval` |
+
+**Iterations**
+1. **Baseline on the new architecture.** Restart the stack with the current code (gateway + 3 services). Run test, smoke, eval. Drive every new API route and every story through the gateway. Play every UI flow in the stand-in browser (the connected Chrome is on another machine and cannot reach localhost). Dead-code sweep of everything added since Round 1.
+2. **Model quality.** Extend the eval to the new model jobs: FTC drafts (facts, voice, categories) and screenshot reading (fixture images incl. benign ones). Judge every output as a reviewer, fix prompts and code checks.
+3. **Bugs** from the walkthroughs (UI state, races, edge cases, error paths, accessibility).
+4. **Simplification and a UI test.** `app.js` grew to ~1,500 lines; dedupe what repeats. Turn the throwaway stand-in-browser scripts into a committed `task test:ui` so a blank-page regression can never pass unnoticed again (the gap Round 1 named).
+5. **Regression and summary.**
+
+## Round 2, iteration 1: baseline on the new architecture, walkthroughs, dead code
+
+**Environment**: restarted the stack on the current code (it was still the 05:16 pre-gateway build): gateway :8787, agent :8790, screenshot :8791, workers, Kafka, Postgres, Ollama with 3 models.
+
+**New tool: `harbor/test_ui.js` (`task test:ui`)**. Loads the real `app.js` in a stand-in browser, renders all six tabs and plays every story to the end: phone result, lock screen, chat, Live AI reply or guided path, join request, takeover and employee message, outcome, MFA tip, feedback, verdict, the member's FTC follow-up and the analyst panel's FTC card. Offline it uses the browser engine and guided script (fast, deterministic); `--live` runs the same flows through the real gateway and models. This closes the gap Round 1 named (nothing loaded the UI, so a blank page passed every check). Replaces five throwaway scripts.
+
+**Results**: `task test` identical; `task smoke` all good (7/8 first messages by the model); UI test offline 7/7, live 6/7 then 7/7 after the fixes below; chat eval 28/28; first messages 4/14 (timeouts, see Ollama below).
+
+**Bugs found and fixed**
+1. **A light-check chat had no case in the analyst panel** until it ended (found by the live UI test, contractor story): staff could not follow or take over, and a join request raised during a light check could not be answered. A light check now gets a case as soon as its chat starts, with its own wording ("Light check: the payment waits for the member's answer", "Waiting for the member (light check)", timeline "Light check" instead of "Payment held").
+2. **The analyst started a check-in with a legitimate look-alike** (the real mover M1039 received "a quick check before your payment goes out"). Round 1 only capped the analyst's risk at medium for look-alikes, and medium still passed the gate. A look-alike judged by the rules now never gets analyst outreach; the read is kept as context.
+3. **An analyst check-in's first message talked about a pending payment** ("before your payment goes out"; nothing was pending). The composer brief now has its own facts and question for analyst check-ins, and code rejects pending-payment wording for them.
+4. **The agent's API was down for 30-40 s after every restart**: it only started listening after its Kafka consumer groups rebalanced, so the gateway answered "agent service unavailable". The API now listens as soon as Postgres and the producer are ready (2 s).
+5. **`GET /api/screenshot` (no trailing slash) went to the agent and 404'd**: the gateway route matched only `/api/screenshot/`. Fixed for both forms and for the rate limit.
+6. **Ollama limit I set earlier was wrong**: `OLLAMA_MAX_LOADED_MODELS=2`, but Harbor now uses three models (14B, 3B, 7B vision), so Ollama would keep unloading one to load another. Now 3 in `run.sh` and the saved setting. Separately, the running Ollama app has still not been restarted since parallel mode was saved, so every 14B request queues behind the others: that is why 10/14 first messages timed out in the eval while the live UI test ran. Needs a manual Ollama restart (quit and reopen from the menu bar).
+7. Smoke test printed its gateway line before its header.
+
+**Checked, not a bug**: Sarah's case disappeared during one live UI run. Cause: my harness started her story while the app's own boot-time start of the same story was still in flight, and the late request reset her. A user cannot hit this (the app starts one story once on load); the harness now waits for the boot-time start.
+
+**Rename (user request)**: "Employee console" is now **"Security analyst panel"** in the tab, the architecture diagram, `ARCHITECTURE.md`, `README.md` and `SUBMISSION.md`. Member-facing "a Sound employee" is unchanged.
+
+**Dead code removed**: `decideCard()` (never called since the live feed was rebuilt); unused `VERDICTS`; unused exports in `agent.js` (`TONES`, `SAFE_FALLBACK`, `SIGNALS`, `systemPrompt`, `sanitize`), `ftc.js` (`QUESTIONS`, `CATEGORIES`), `feedback.js` (`EVENTS`, `DIR`), `lib/screenshot.js` (`defang`, `KINDS`, `ASKS`); CSS left from thumbs feedback (`.fbrow`, `.fbbtn`).
+
+## Round 2, iteration 2: the new model jobs (FTC drafts, screenshot reading)
+
+**Eval extended** (`task eval`, new `--section chat,compose,ftc,shots`):
+- **FTC drafts**: 4 cases (Linda, Michael, James, Sarah). Checks a reviewer would make: right form and category, payment amount present, no payment time used as the time they were contacted, Sound never named as where the money went, a fake Sound text described as an impersonation, the true ending stated, the member's own voice.
+- **Screenshots**: 5 committed fixtures in `harbor/fixtures/screenshots/` (fake Sound text asking for a code, "attorney" asking for gift cards and secrecy, Instagram crypto DM, a contractor invoice, a genuine Sound password-change notice). Checks expected risk, flags, no false flags and no wrong advice.
+
+**What was wrong, judged as a reviewer**
+- **The FTC story invented what happened after the payment**: "I noticed this and stopped the payment", "I immediately contacted Sound to report it", James "followed their instructions and took out the money". In a report to a federal agency these are false statements. Code now owns the ending: the model is told not to describe it, code drops any sentence that does (and any claim that money moved when nothing was lost), then appends the true ending with the amount ("Sound Credit Union stopped the $7,000 cash withdrawal before any money left my account", or the exact loss and recovery).
+- **Impersonators described as the real thing**: "A federal agent called me". Code rewrites impersonated roles to "someone claiming to be a federal agent" unless the text already says so. "I want to remain anonymous" no longer leaks into the story (the form's About you section covers it).
+- **A genuine Sound notice was "medium risk"** just for claiming to be Sound. A Sound message that asks for nothing (no link, money, code or number to call) is now low risk with reassuring advice ("This looks like a normal notice: it asks for nothing. If you didn't make that change, tell me"). "Call the number on the back of your card" is never treated as a lure.
+- One fix of mine broke a case and was caught by the eval in the same iteration: removing the model's ending sentence also removed the amount when both were in one sentence; the code-written ending now carries the amount.
+
+**Results**: FTC 7/8 -> 12/12 (3 runs each); screenshots 10/10 (2 runs each); full eval **60/60** (chat 28, first messages 14, FTC 8, screenshots 10).
+
+## Round 2, iteration 3: bugs
+
+**Service logs** after all the walkthroughs: no errors (the only "bad request" is the smoke test's deliberate one).
+
+**Bugs found and fixed**
+1. **Ending a chat wiped what staff had done on the case.** `finish()` replaced the case with a fresh summary, dropping the analyst's verdict, 1-5 rating and "Done so far" actions (the same class of bug Round 1 fixed for the pipeline data). It also dropped the employee's own messages from the ended conversation. The summary now keeps the staff state and every message.
+2. **A verdict saved while the member was still chatting started the FTC follow-up mid-conversation**: its messages appeared, but its buttons only show after the chat ends. The follow-up now waits for the chat to end, then starts from the up-to-date case.
+3. **The tagger still sent a legitimate look-alike to the human review queue** (the real mover's payment, "high"). The scorer now tells the tagger when the rules judged a look-alike, and the tagger caps it at medium. Verified: M1039's payment is tagged medium, review queue 0 (was 1).
+4. **Tapping a link in a chat message collapsed the reply panel** (e.g. reportfraud.ftc.gov in Harbor's follow-up). Links no longer collapse it.
+
+**Regression tests added to `task test:ui`**: a verdict saved mid-chat waits; verdict, rating and actions survive the end of the chat; the employee's messages stay; the FTC follow-up starts once the chat ends.
+
+## Round 2, iteration 4: simplification and the UI test
+
+- **`task test:ui`** (built in iteration 1, extended in 3) is the main simplification: one committed test replaces five throwaway stand-in-browser scripts, and covers every tab, every story in Guided (offline) and Live AI (`--live`), and the staff-state regressions.
+- **`caseNote(k, note, toServer)`**: one helper for the six places that recorded a staff action ("Done so far", the case log, and for two of them the real case on the server, each with its own case-id lookup).
+- **One microphone icon** (`MIC_ICON`) instead of two copies of the SVG.
+- The employee action handler is one line.
+- Dead-code scan after the changes: no unused top-level names; no leftovers from the removed drag sheet. `app.js` 1,551 -> 1,524 lines while adding the light-check case, the deferred FTC follow-up and the staff-state fixes.
+- Left as is, deliberately: the 14 `recOf(...).chat` lookups (they differ enough that a helper would hide intent), and the duplicated feedback / FTC routes in `harbor/server.js` (file store) and `agent-service.js` (Postgres): two storage back ends, a few lines each.
+
+## Round 2, iteration 5: regression
+
+| Check | Result |
+|---|---|
+| `node --check` / `bash -n` on every source and script | clean |
+| `task test` (rules on 118 members) | byte-identical to the Round 1 baseline (48/48, 7/70) |
+| `task test:ui` offline | every tab renders; 7/7 stories to an outcome; staff work survives the end of a chat |
+| `task test:ui -- --live` (real gateway and models) | 7/7 stories in Live AI incl. takeover, MFA, feedback, verdict and the full assisted FTC draft |
+| `task smoke` | all good (first messages: 6/8 by the model, 2 template under load) |
+| `task eval -- --repeat 2` | **60/60**: chat 28, first messages 14, FTC drafts 8, screenshots 10 |
+| `task chat` (no Docker) | app, chat and FTC questions answer |
+
+**Still to do by hand**: quit and reopen the Ollama app once. Parallel requests and the 3-model limit are saved but the running Ollama predates them; until then 14B requests queue behind each other and some first messages fall back to the template under load.
+
+---
+
+## Round 2 summary for a human
+
+**What I did**: a second 5-iteration pass over everything added since Round 1 (feedback, verdicts, interaction log, join requests, FTC flow, screenshot service, gateway, MFA, composer, timeline), on the restarted stack. Nothing is committed.
+
+**Biggest fixes**
+1. **Legitimate look-alikes are left alone end to end.** The analyst had started a check-in with the real mover (a legitimate member) because Round 1 only capped its risk; the tagger also still sent that member's payment to the human review queue. Both now respect the rules' look-alike judgment.
+2. **FTC reports no longer contain false statements.** The model invented what happened after the payment ("I noticed and stopped it", "I took out the cash", "I called Sound") and described impersonators as the real thing ("a federal agent called"). Code now writes the true ending with the amount and rewrites impersonated roles ("someone claiming to be a federal agent"). FTC drafts 7/8 -> 12/12.
+3. **Staff work is never lost.** Ending a chat used to wipe the analyst's verdict, rating, actions and their own chat messages; a verdict saved mid-chat started the FTC follow-up in the wrong place. Both fixed and covered by tests.
+4. **Light checks are visible to staff.** A light-check conversation had no case in the analyst panel until it ended, so nobody could take over or answer a join request.
+5. **Screenshots judged like a person would.** A genuine Sound notice that asks for nothing is now low risk with reassuring advice (it was "medium, claims to be Sound").
+6. **Operations**: the agent API is up 2 s after a restart (was 30-40 s behind Kafka rebalancing); `GET /api/screenshot` routes correctly; Ollama keeps all 3 models loaded (the limit I set earlier was 2).
+
+**New**: `task test:ui` (the real app in a stand-in browser, offline and `--live`), screenshot fixtures and FTC / screenshot sections in `task eval` (`--section`), "Security analyst panel" (renamed from Employee console, as asked).
+
+**Lesson**: the live UI test found the two worst bugs of this round (light checks invisible to staff, staff work wiped on chat end) within minutes; neither the API smoke test nor the model eval could have. Keep running `task test:ui -- --live` before a demo.

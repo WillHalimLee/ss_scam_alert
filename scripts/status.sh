@@ -5,7 +5,9 @@ up()   { printf '  \033[32m● up\033[0m    %s\n' "$1"; }
 down() { printf '  \033[31m○ down\033[0m  %s\n' "$1"; }
 port() { lsof -iTCP:"$1" -sTCP:LISTEN -n -P >/dev/null 2>&1; }
 echo "Harbor status"
-port 8787 && up "app + API          http://localhost:8787 ($(curl -s -m 2 localhost:8787/api/status 2>/dev/null | head -c 100))" || down "app + API          :8787"
+port 8787 && up "gateway + app      http://localhost:8787 ($(curl -s -m 2 localhost:8787/api/gateway/health 2>/dev/null))" || down "gateway + app      :8787"
+port 8790 && up "agent service      :8790 (internal)" || down "agent service      :8790"
+port 8791 && up "screenshot service :8791 (internal, $(curl -s -m 2 localhost:8791/api/screenshot/health 2>/dev/null | grep -q '"ready":true' && echo 'vision model ready' || echo 'vision model not pulled'))" || down "screenshot service :8791"
 for s in scorer tagger analyst; do
   f="$ROOT/backend/.logs/$s.pid"; { [ -f "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null; } && up "$s" || down "$s"
 done

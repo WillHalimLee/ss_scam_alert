@@ -30,6 +30,10 @@ function known(facts) {
   else if (/\b(dating|online|instagram|facebook|whatsapp|met on)\b/.test(said)) k.contact = 'Social media or a dating app';
   if (/\bdating app\b/.test(said)) k.platform = 'A dating app';
   if (/\b(today|this morning|tonight)\b/.test(said)) k.when = 'Today';
+  const shot = facts.screenshot || {};                                         // what the member's screenshot showed (screenshot service)
+  if (shot.contact && !k.contact) k.contact = shot.contact;
+  if (shot.pretended && !facts.ato) k.pretended = shot.pretended;
+  if (shot.other_info) k.other_info = shot.other_info;
   const who = said.match(/\b(lawyer|attorney|federal agent|fbi|irs|police|sheriff|social security|medicare|amazon|microsoft|apple|sound)\b/);
   if (who && !facts.ato) k.pretended = who[1].replace(/\b\w/g, (c) => c.toUpperCase());
   return k;
@@ -56,7 +60,7 @@ const splitName = (n) => {
 const SYSTEM = `You help a credit union member prepare a fraud report for the U.S. Federal Trade Commission. You get the facts of the case and the member's answers.
 Write ONLY JSON: {"category": one of ${JSON.stringify(CATEGORIES)}, "story": "the member's account in the first person, plain words, 4-7 sentences, under 900 characters"}.
 Category: someone pretending to be a government agency, a business, a lawyer, a love interest or a family member is "${IMPERSONATOR}" (romance scams count here); a fake investment is "${INVESTMENT}". Do not include account numbers, dates of birth or Social Security numbers.
-Rules: use only the facts given; never invent names, phone numbers, websites, dates or amounts; payment.started_at is when the payment was started, not when anyone called; Sound Credit Union is the member's own credit union, never the place the money went; a call, text or email the member says came "from Sound" during the fraud was from someone pretending to be Sound; if money_lost is $0, say the payment was stopped before any money left; write amounts exactly as given (like $8,500); if something is unknown, leave it out; no passwords or codes; no advice; calm and factual.`;
+Rules: use only the facts given; never invent names, phone numbers, websites, dates or amounts; payment.started_at is when the payment was started, not when anyone called; Sound Credit Union is the member's own credit union, never the place the money went; a call, text or email the member says came "from Sound" during the fraud was from someone pretending to be Sound; do not say how the payment ended or what anyone did after it started (code adds that fact); describe people by what they claimed to be ("someone claiming to be a federal agent", "a man who said he was a lawyer"), because they were impersonators; do not mention staying anonymous; write amounts exactly as given (like $8,500); if something is unknown, leave it out; no passwords or codes; no advice; calm and factual.`;
 const SCHEMA = { type: 'object', required: ['category', 'story'], properties: { category: { type: 'string', enum: CATEGORIES }, story: { type: 'string' } } };
 
 function templateStory(f, a) {
@@ -66,6 +70,18 @@ function templateStory(f, a) {
     a.pretended && !/didn|sure/i.test(a.pretended) ? `They said they were ${a.pretended}.` : '', a.name && !/didn|remember/i.test(a.name) ? `The person called themselves ${a.name}.` : '', a.other_info && !/^no$/i.test(a.other_info) ? `They used ${a.other_info}.` : '', f.loss ? `I lost ${f.loss}${f.recovered ? ` and ${f.recovered} was recovered` : ''}.` : 'No money was lost.'].filter(Boolean).join(' ');
 }
 
+/** How the payment ended is a fact code knows, so code writes it: the model's own sentences about it are dropped
+ *  (it tends to invent "I noticed and stopped it" or "I called Sound"), then the true ending is appended. */
+const OUTCOME = /\b(stopped|paused|cancel+ed|before any money|never (left|sent)|lost|recover|reported|contacted sound|called sound|i noticed)\b/i;
+const MOVED = /\b(I|we)\b[^.!?]*\b(took out|withdrew|wired|sent|transferred|paid|handed|gave)\b/;   // money that never moved must not be said to have moved
+/** An impersonator is described by what they claimed to be: "a federal agent called" -> "someone claiming to be a federal agent called". */
+const ROLE = /(?<!(?:claiming|pretending|claimed|pretended) to be |said (?:he|she|they) (?:was|were) |posing as |posed as )\b(a|an) (federal agent|fbi agent|irs agent|government agent|police officer|officer|detective|lawyer|attorney|judge|bank employee)\b/gi;
+function withOutcome(story, f) {
+  const kept = story.split(/(?<=[.!?])\s+/).filter((x) => !OUTCOME.test(x) && !/anonymous/i.test(x) && (f.loss || !MOVED.test(x))).join(' ');
+  const end = f.loss ? `${kept.includes(f.amount) ? '' : `I sent ${f.amount} by ${f.method}. `}I lost ${f.loss}${f.recovered ? `, and ${f.recovered} was recovered` : ''}.`
+    : `Sound Credit Union stopped the ${f.amount} ${f.method} before any money left my account.`;
+  return (kept + ' ' + end).trim().replace(ROLE, (m, art, role, i, str) => (i === 0 || /[.!?]\s*$/.test(str.slice(0, i)) ? 'Someone' : 'someone') + ` claiming to be ${art.toLowerCase()} ${role}`);
+}
 /** The report, section by section. The model writes the story and category; code writes everything else and checks the model. */
 async function draft(input) {
   const f = deep(input.facts || {}), a = deep(Object.assign({}, known(f), input.answers || {})), t0 = Date.now();
@@ -80,7 +96,7 @@ async function draft(input) {
       const j = agent.extractJSON(await agent.callModel(p, SYSTEM, messages, meta, SCHEMA, { temperature: 0.2, num_predict: 400 }) || '');
       const s = j && String(j.story || '').replace(/\s+/g, ' ').trim(), amounts = (s || '').match(/\$[\d,]+(\.\d+)?/g) || [], allowed = [f.amount, f.loss, f.recovered].filter(Boolean);
       reason = !s ? 'no story' : s.length > 3500 ? 'longer than the form allows' : f.amount && !s.includes(f.amount) ? 'payment amount missing' : amounts.some((x) => !allowed.includes(x)) ? 'an amount it was not given' : null;
-      if (!reason) { story = s; source = 'llm'; model = p.model; if (!f.ato && CATEGORIES.includes(j.category)) category = j.category; }
+      if (!reason) { story = withOutcome(s, f); source = 'llm'; model = p.model; if (!f.ato && CATEGORIES.includes(j.category)) category = j.category; }
       agent.trace.record({ kind: 'ftc_draft', label: f.member_id, provider: p.name, model: p.model, latencyMs: meta.latencyMs, usage: meta.usage, input: { system: SYSTEM, messages }, output: { raw: meta.raw, parsed: j, final: { category, story } }, guardrails: reason ? [{ type: 'ftc_story_rejected', detail: reason }] : [] });
     } catch (e) { reason = 'model error: ' + e.message.slice(0, 60); }
   } else reason = 'no model configured';
@@ -106,4 +122,4 @@ async function draft(input) {
   ];
   return { site: { name: 'reportfraud.ftc.gov', url: 'https://reportfraud.ftc.gov/' }, category, story, sections, source, model, reason, ms: Date.now() - t0, agent_version: agent.VERSION };
 }
-module.exports = { draft, questionsFor, known, QUESTIONS, CATEGORIES };
+module.exports = { draft, questionsFor, known };

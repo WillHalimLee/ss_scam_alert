@@ -12,7 +12,7 @@ Harbor is a personal security analyst for Sound Credit Union members. It protect
 
 ## How we built it
 - **Trigger engine:** Two stages in JavaScript (flag the account, then check each payment), tested on all 118 synthetic members in a live simulator.
-- **Prototype:** a member phone app, an employee console, and a chart showing every rule check.
+- **Prototype:** a member phone app, a security analyst panel, and a chart showing every rule check.
 - **Agent:** a local Qwen 2.5 14B model (Ollama) behind a prompt, a reply filter, and code-controlled options.
 - **Backend:** Kafka-compatible events, a rules scorer (about 1 ms), an advisory LLM tagger, a notification agent, Postgres, and a retro job for longer-window patterns.
 

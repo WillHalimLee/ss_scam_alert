@@ -6,7 +6,6 @@ const fs = require('fs'), path = require('path'), { redact, deep } = require('./
 const DIR = process.env.HARBOR_FEEDBACK_DIR || path.join(__dirname, '.feedback');
 const short = (v, n) => (v == null || v === '' ? null : String(v).slice(0, n));
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? deep(v) : {});
-const VERDICTS = { '-1': 'legitimate', 0: 'unsure', 1: 'confirmed scam' };
 
 /** POST /api/feedback body -> row, or null. Member and employee: rating 1-5 (5 = very good). Employee also: verdict (-1 legitimate, 0 unsure, 1 confirmed scam). */
 function clean(b) {
@@ -19,7 +18,7 @@ function clean(b) {
     mode: ['live', 'guided'].includes(b.mode) ? b.mode : null, context };
 }
 
-const EVENTS = ['offered', 'chose', 'typed', 'voice', 'fallback', 'abandoned', 'employee_reply', 'join_request', 'join_answered'];
+const EVENTS = ['offered', 'chose', 'typed', 'voice', 'fallback', 'abandoned', 'employee_reply', 'join_request', 'join_answered', 'screenshot', 'mfa'];
 /** POST /api/interactions body ({ events: [...] }) -> up to 50 rows. Unknown kinds are dropped. */
 const cleanEvents = (b) => (Array.isArray(b.events) ? b.events : []).slice(0, 50).filter((e) => e && EVENTS.includes(e.kind)).map((e) => ({
   kind: e.kind, case_id: short(e.case_id, 40), member_id: short(e.member_id, 20), story: short(e.story, 20), mode: ['live', 'guided'].includes(e.mode) ? e.mode : null,
@@ -32,4 +31,4 @@ const store = (name) => {
     list(n = 200) { try { return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).slice(-n).reverse(); } catch { return []; } },
   };
 };
-module.exports = { clean, cleanEvents, VERDICTS, EVENTS, store, fileStore: store('feedback'), eventStore: store('interactions'), DIR };
+module.exports = { clean, cleanEvents, store, fileStore: store('feedback'), eventStore: store('interactions') };

@@ -1,12 +1,12 @@
-// API server + notification agent. One process serves the app on http://localhost:8787 and runs the agent.
+// Agent service: the notification agent plus the case, chat, demo and pipeline API. Internal port :8790, behind the gateway (:8787).
 //   alerts.risk -> case management (merge, rate-limit) -> personalized message -> notifications.out -> delivery adapter
-//   HTTP: static front end, /api/demo/* (stream a demo story into Kafka), /api/console + /api/cases/* (real cases),
+//   HTTP: /api/demo/* (stream a demo story into Kafka), /api/console + /api/cases/* (real cases),
 //         /api/chat (direct model chat), /api/traces (model inspector), /api/pipeline (stats).
 //   Timer: no reply by due_at -> escalate to a human.
 const http = require('http'), crypto = require('crypto');
 const cfg = require('../lib/config'), { pool, q, ensureSchema } = require('../lib/db'), K = require('../lib/kafka'), llm = require('../lib/llm'), demo = require('../lib/demo');
 const { compose, whyFor, money, railWord } = require('../lib/compose');
-const agent = llm.agent, { json, readBody, serveStatic } = require('../../harbor/http.js'), feedback = require('../../harbor/feedback.js'), ftc = require('../../harbor/ftc.js'), { redact, deep } = require('../../harbor/redact.js');
+const agent = llm.agent, { json, readBody } = require('../../harbor/http.js'), feedback = require('../../harbor/feedback.js'), ftc = require('../../harbor/ftc.js'), { redact, deep } = require('../../harbor/redact.js');
 
 /* ---------- alert handling ---------- */
 let prod;
@@ -201,13 +201,15 @@ async function route(req, res) {
     const status = ['human', 'no_response', 'timeout', 'callback', 'callback_fast', 'ato_stop'].includes(body.outcome) ? 'escalated_human' : 'resolved';
     await resolve(m[1], String(body.outcome || 'resolved').slice(0, 60), status); return json(res, 200, { ok: true, status });
   }
-  if (p.startsWith('/api/')) return json(res, 404, { error: 'not found' });
-  return serveStatic(req, res, p);
+  return json(res, 404, { error: 'not found' });                                    // the app itself is served by the gateway
 }
 
 /* ---------- main ---------- */
 (async () => {
   await ensureSchema(); await K.ensureTopics(); prod = await K.producer();
+  // The API answers as soon as Postgres and the producer are ready: Kafka consumer groups can take ~30 s to rebalance after a restart.
+  http.createServer((req, res) => route(req, res).catch((e) => { console.error('http', e.message); json(res, Number.isInteger(e.code) && e.code >= 400 && e.code < 600 ? e.code : 500, { error: e.message }); })).listen(cfg.agentPort, () =>
+    console.log(`[agent] running. internal API :${cfg.agentPort} (public through the gateway :${cfg.gatewayPort})  provider: ${(llm.provider() || { name: 'none (template messages only)' }).name}`));
   await K.consume({ group: 'harbor-agent', topic: cfg.topics.alerts, handler: onAlert, dlqProducer: prod, concurrency: 2 });
   // Delivery adapter: the only part that would change for a real SMS / push provider.
   await K.consume({ group: 'harbor-delivery', topic: cfg.topics.out, dlqProducer: prod, handler: async (m) => {
@@ -218,6 +220,4 @@ async function route(req, res) {
     try { for (const c of (await q(`select case_id from cases where status='awaiting_member' and due_at < now()`)).rows) { await resolve(c.case_id, 'no_response', 'escalated_human'); console.log(`[agent] ${c.case_id} escalated to a human (no reply)`); } }
     catch (e) { console.error('timer', e.message); }
   }, 5000);
-  http.createServer((req, res) => route(req, res).catch((e) => { console.error('http', e.message); json(res, Number.isInteger(e.code) && e.code >= 400 && e.code < 600 ? e.code : 500, { error: e.message }); })).listen(cfg.agentPort, () =>
-    console.log(`[agent] running. API http://localhost:${cfg.agentPort}  provider: ${(llm.provider() || { name: 'none (template messages only)' }).name}`));
 })().catch((e) => { console.error(e); process.exit(1); });

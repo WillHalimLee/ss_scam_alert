@@ -33,9 +33,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if lsof -iTCP:"$CHAT_PORT" -sTCP:LISTEN -n -P >/dev/null 2>&1; then
-  die "Port $CHAT_PORT is already in use. Run 'task stop' first, or set PORT=<other>."
-fi
+for P in "$CHAT_PORT" "${AGENT_PORT:-8790}" "${SCREENSHOT_PORT:-8791}"; do
+  if lsof -iTCP:"$P" -sTCP:LISTEN -n -P >/dev/null 2>&1; then die "Port $P is already in use. Run 'task stop' first."; fi
+done
 
 say "1/7 Docker"
 if ! docker info >/dev/null 2>&1; then
@@ -53,7 +53,8 @@ if [ -z "$PROVIDER" ]; then
   else
     # Parallel requests: Harbor's first message, the analyst and the chat use the same 14B model at the same moment, and without
     # this Ollama answers them one at a time. OLLAMA_NUM_PARALLEL lets each model serve several requests at once.
-    export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-4}" OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-2}"
+    # Three models stay loaded (14B, 3B tagger, 7B vision): with fewer, Ollama keeps unloading one to load another.
+    export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-4}" OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-3}"
     if [ "$(uname)" = Darwin ] && [ "$(launchctl getenv OLLAMA_NUM_PARALLEL)" != "$OLLAMA_NUM_PARALLEL" ]; then   # the Ollama Mac app reads launchctl
       launchctl setenv OLLAMA_NUM_PARALLEL "$OLLAMA_NUM_PARALLEL"; launchctl setenv OLLAMA_MAX_LOADED_MODELS "$OLLAMA_MAX_LOADED_MODELS"
       pgrep -f "Ollama.app/Contents" >/dev/null 2>&1 && warn "Ollama parallel requests set to $OLLAMA_NUM_PARALLEL: quit and reopen the Ollama app (menu bar) to apply it"
@@ -90,12 +91,16 @@ say "5/7 Data"
 if [ "$RESET" = true ]; then (cd backend && node scripts/reset.js 2>&1 | grep -E "^reset|rror" ); else ok "keeping earlier data (RESET=false)"; fi
 (cd backend && node scripts/seed.js 2>&1 | grep -v -E "Timeout|trace-warnings")
 
-say "6/7 Pipeline workers"
-(cd backend && CASE_TIMEOUT_SEC="${CASE_TIMEOUT_SEC:-600}" ./scripts/start-all.sh scorer tagger analyst) | sed 's/^/  /'
-ok "scorer, tagger and analyst are running"
+say "6/7 Services"
+(cd backend && CASE_TIMEOUT_SEC="${CASE_TIMEOUT_SEC:-600}" ./scripts/start-all.sh scorer tagger analyst agent-service screenshot) | sed 's/^/  /'
+ok "scorer, tagger, analyst, agent (:8790) and screenshot (:8791) services are running"
+VISION="${HARBOR_VISION_MODEL:-qwen2.5vl:7b}"
+if [ "$PROVIDER" = ollama ] && ! curl -s -m 2 localhost:11434/api/tags | grep -q "\"$VISION\""; then
+  warn "screenshot reading needs the vision model: ollama pull $VISION (about 6 GB). Everything else works without it."
+fi
 
-say "7/7 API server and app"
+say "7/7 Gateway and app"
 URL="http://localhost:$CHAT_PORT"
-printf '\n  \033[1mHarbor is running\033[0m\n    App + API:       %s   (pick a story, then Send payment: events stream through Kafka live)\n    Model inspector: %s/inspector.html  (what the model sees and says)\n    Logs:            backend/.logs/\n    Stop:            Ctrl+C\n\n' "$URL" "$URL"
+printf '\n  \033[1mHarbor is running\033[0m\n    App + API:       %s   (gateway: the app, and /api/* routed to the agent and screenshot services)\n    Model inspector: %s/inspector.html  (what the model sees and says)\n    Logs:            backend/.logs/\n    Stop:            Ctrl+C\n\n' "$URL" "$URL"
 [ "${OPEN:-true}" = true ] && ( sleep 3; command -v open >/dev/null 2>&1 && open "$URL" ) & BG_PIDS+=($!)
-cd backend && AGENT_PORT="$CHAT_PORT" CASE_TIMEOUT_SEC="${CASE_TIMEOUT_SEC:-600}" node services/agent-service.js
+cd backend && PORT="$CHAT_PORT" node services/gateway.js

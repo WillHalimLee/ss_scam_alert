@@ -266,4 +266,4 @@ async function chat(body) {
  *  so ratings can be compared before and after a change. */
 const VERSION = require('crypto').createHash('sha1').update([systemPrompt, shapeReply, sanitize, SAID, BAD_REPLY, SAFE_FALLBACK].map(String).join('\n')).digest('hex').slice(0, 8);
 
-module.exports = { trace, chat, provider, callModel, OLLAMA, VERSION, TONES, extractJSON, BAD_REPLY, SAFE_FALLBACK, SIGNALS, RED_FLAGS, systemPrompt, sanitize };
+module.exports = { trace, chat, provider, callModel, OLLAMA, VERSION, extractJSON, BAD_REPLY, RED_FLAGS };

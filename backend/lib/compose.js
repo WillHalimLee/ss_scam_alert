@@ -30,12 +30,13 @@ Held payment example: {"message": "Hi Dana, this is Harbor, your security analys
 
 function brief(a, name) {
   // written as the member will read them ("you"): the model tends to copy these phrases word for word
-  const must = a.completed ? ['your payment already went through']
+  const must = a.source === 'analyst' ? ['some recent activity on your account looks different from usual', 'nothing has been paused or stopped']
+    : a.completed ? ['your payment already went through']
     : a.level === 'hold' ? ['I paused your payment', 'nothing has been sent', "you're in control"]
     : ['this is just a quick check before your payment goes out' + (planned(a) ? ', because it matches the Planned Big Payment you set up' : '')];
-  if (a.amount) must.push('the amount and method: ' + money(a.amount) + ' ' + railWord(a.rail));
+  if (a.amount && a.source !== 'analyst') must.push('the amount and method: ' + money(a.amount) + ' ' + railWord(a.rail));
   if (a.ato) must.push('your password, email and phone number were changed just before this payment started');
-  const question = a.ato ? 'Did you make those changes? Either answer is okay.' : a.level === 'confirm' && planned(a) ? 'Did you confirm the account details by phone, using a number you already had?' : 'Could you tell me what this payment is for?';
+  const question = a.source === 'analyst' ? 'Does anything on your account look unfamiliar to you?' : a.ato ? 'Did you make those changes? Either answer is okay.' : a.level === 'confirm' && planned(a) ? 'Did you confirm the account details by phone, using a number you already had?' : 'Could you tell me what this payment is for?';
   return { first_name: name || null, check: a.completed ? 'follow-up on a completed payment' : a.level === 'hold' ? 'held payment' : 'light check', source: a.source, takeover_suspected: !!a.ato, payment_already_completed: !!a.completed,
     amount: a.amount ? money(a.amount) : null, rail: railWord(a.rail), why: whyFor(a), must_say: must, end_with_question: question };
 }
@@ -49,7 +50,8 @@ function check(a, text) {
   const paused = /\b(paused|on hold|held|blocked)\b/i;
   const CHECKS = [
     ['too long', () => text.length <= 700],
-    [a.level === 'hold' ? 'did not say paused and nothing sent' : 'called a light check paused or sent', () => a.completed || (a.level === 'hold' ? paused.test(text) && /\bnothing\b/i.test(text) : !paused.test(text) && !/going through|been sent|on its way/i.test(text))],
+    ['an analyst check-in talked about a pending payment', () => a.source !== 'analyst' || !/going through|goes out|before (your|the) payment|been sent|paused your/i.test(text)],
+    [a.level === 'hold' ? 'did not say paused and nothing sent' : 'called a light check paused or sent', () => a.completed || a.source === 'analyst' || (a.level === 'hold' ? paused.test(text) && /\bnothing\b/i.test(text) : !paused.test(text) && !/going through|been sent|on its way/i.test(text))],
     ['amount missing', () => !a.amount || text.includes(money(a.amount))],
     ['not exactly one closing question', () => (text.match(/\?/g) || []).length === 1 && /\?\s*(either answer is okay\.?)?$/i.test(text)],
     ['did not introduce Harbor as security analyst', () => /security analyst/i.test(text)],

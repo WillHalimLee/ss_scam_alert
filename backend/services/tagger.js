@@ -108,7 +108,7 @@ Earlier events: ${recent.map((r) => `${r.t} ${r.type}${r.rail && r.rail !== 'Not
     } catch (err) { console.error('[tagger] llm failed, using rule tag:', err.message); }
     if (!out) { out = ruleTag(e, decision); source = 'rule'; used = null; }
     // The data overrules the model: a deposit or purchase, a payment below the member's own usual amount, or the bank's own intervention never reaches the human review queue.
-    if (out.risk === 'high' && (routine || (e.ratio != null && e.ratio < 1) || e.cat === 'Intervention' || e.cat === 'Case & Recovery')) out.risk = 'medium';
+    if (out.risk === 'high' && (routine || (decision && decision.lookalike) || (e.ratio != null && e.ratio < 1) || e.cat === 'Intervention' || e.cat === 'Case & Recovery')) out.risk = 'medium';
     const alerted = !!(decision && decision.level !== 'none');
     const disagrees = !!((alerted && out.risk === 'low') || (!alerted && decision && out.risk === 'high'));
     await pool.query(`insert into event_notes (event_id, member_id, tag, category, risk, note, source, model, latency_ms, disagrees, new_tag) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)

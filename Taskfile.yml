@@ -8,7 +8,7 @@ tasks:
       - task --list
 
   run:
-    desc: Start everything (Docker, Kafka, Postgres, scorer, tagger, API + app on :8787) and open it. Ctrl+C stops it.
+    desc: Start everything (Docker, Kafka, Postgres, the pipeline, agent and screenshot services, gateway + app on :8787) and open it. Ctrl+C stops it.
     cmds:
       - bash scripts/run.sh
 
@@ -21,7 +21,7 @@ tasks:
     desc: Stop the chat server and backend services (leaves Docker running).
     cmds:
       - bash backend/scripts/stop-all.sh || true
-      - for p in 8787 8790; do lsof -ti tcp:$p | xargs kill 2>/dev/null || true; done
+      - for p in 8787 8790 8791; do lsof -ti tcp:$p | xargs kill 2>/dev/null || true; done
       - echo "stopped"
 
   down:
@@ -69,6 +69,11 @@ tasks:
     desc: "End-to-end check of the running stack: every story through the API, console, takeover and actions. Resets those stories. Example: task smoke -- M1003"
     cmds:
       - cd backend && node scripts/smoke.js {{.CLI_ARGS}}
+
+  test:ui:
+    desc: "Load the real app in a stand-in browser, render every tab and play every story to the end. Add -- --live to run against task run with the real models."
+    cmds:
+      - node harbor/test_ui.js {{.CLI_ARGS}}
 
   eval:
     desc: "Score the chat agent and first messages on scripted member conversations (needs a provider; Ollama by default). Example: task eval -- --repeat 3"

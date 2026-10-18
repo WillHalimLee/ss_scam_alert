@@ -33,6 +33,7 @@ async function ensureSchema() {
     create index if not exists feedback_case on feedback (case_id);
     create table if not exists interactions (id serial primary key, kind text not null, case_id text, member_id text, story text, mode text, tone text, agent_version text, ms int, detail jsonb not null default '{}', created_at timestamptz not null default now());
     create index if not exists interactions_case on interactions (case_id, created_at);
+    create table if not exists screenshots (id serial primary key, case_id text, member_id text, sha256 text not null, mime text, bytes int, findings jsonb not null default '{}', decision jsonb not null default '{}', model text, ms int, created_at timestamptz not null default now());
     create table if not exists ftc_reports (id serial primary key, case_id text, member_id text, choice text, status text not null, answers jsonb not null default '{}', draft jsonb not null default '{}', created_at timestamptz not null default now());`);
   for (const [name, description] of SEED_TAGS) await pool.query('insert into tags (name, description) values ($1,$2) on conflict (name) do nothing', [name, description]);
 }
