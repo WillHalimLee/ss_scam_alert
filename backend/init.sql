@@ -160,3 +160,38 @@ create table if not exists analyses (
   created_at timestamptz not null default now()
 );
 create index if not exists analyses_member on analyses (member_id, created_at);
+
+-- Feedback on Harbor's handling: the member and the employee each rate 1-5 (5 = very good); the employee also records a verdict. No foreign key on purpose:
+-- a demo reset deletes cases, but feedback is kept for analysis with a snapshot of the conversation in `context`.
+create table if not exists feedback (
+  id serial primary key,
+  source text not null,                              -- member | employee
+  kind text not null,                                -- rating (1-5, member or employee) | verdict (-1 legitimate, 0 unsure, 1 scam)
+  score int not null,
+  comment text,
+  case_id text,
+  member_id text,
+  outcome text,                                      -- how the conversation ended (cancelled, human, override...)
+  mode text,                                         -- live | guided
+  agent_version text,                                -- prompt + guardrail version that produced the replies
+  context jsonb not null default '{}',               -- transcript, signals, rules, model, guardrails at the time
+  created_at timestamptz not null default now()
+);
+create index if not exists feedback_case on feedback (case_id);
+
+-- What the member was offered and what they did: buttons shown and chosen (with time to choose), voice or typing, fallbacks,
+-- abandoned chats, employee replies after a takeover (good example replies). Secrets are masked before storing.
+create table if not exists interactions (
+  id serial primary key,
+  kind text not null,                                -- offered | chose | typed | voice | fallback | abandoned | employee_reply | join_request | join_answered
+  case_id text,
+  member_id text,
+  story text,
+  mode text,                                         -- live | guided
+  tone text,                                         -- the tone Harbor used (one today: warm)
+  agent_version text,
+  ms int,                                            -- e.g. time from the options appearing to the choice
+  detail jsonb not null default '{}',
+  created_at timestamptz not null default now()
+);
+create index if not exists interactions_case on interactions (case_id, created_at);

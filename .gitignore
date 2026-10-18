@@ -7,3 +7,6 @@ data/*.docx
 
 # model traces (may contain member messages)
 harbor/.traces/
+
+# feedback from the chat-only server (may contain member messages)
+harbor/.feedback/

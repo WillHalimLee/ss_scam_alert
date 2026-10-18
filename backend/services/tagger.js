@@ -7,11 +7,14 @@ const cfg = require('../lib/config'), { pool, ensureSchema } = require('../lib/d
 const NAME_RE = /^[a-z][a-z_]{2,39}$/;                       // letters and underscores only: no dates, ids or counters
 const ROUTINE = new Set(['Login', 'Debit Purchase', 'Deposit', 'Bill Payment', 'Automatic Payment', 'ATM Withdrawal', 'Payment Completed']);   // everyday events never need a new tag
 const BAD_SUFFIX = /_(high|higher|low|lower|medium|event|events|new|v\d*)$/;
+/** Event types from the data dictionary, snake_cased. A tag must describe a pattern, not restate the type ("payment_initiated", "email_change"). */
+const EVENT_TYPES = ['Login', 'Failed Login', 'Password Reset', 'Email Change', 'Phone Change', 'Address Change', 'One-Time Code Sent', 'Recipient Added', 'Payment Initiated', 'Payment Completed',
+  'Deposit', 'Bill Payment', 'Automatic Payment', 'Debit Purchase', 'ATM Withdrawal', 'Branch Visit', 'Contact Center Call', 'Warning Displayed', 'Payment Held'].map((t) => t.toLowerCase().replace(/[^a-z]+/g, '_'));
 const toks = (n) => new Set(n.split('_').filter((t) => t.length > 2));
 /** A new tag must be genuinely different: reject near-duplicates of an existing tag (shared words) so the vocabulary stays tidy. */
 function similarTo(name, rows) {
   const a = toks(name);
-  for (const r of rows) { const b = toks(r.name), shared = [...a].filter((t) => b.has(t)).length; if (shared && shared / Math.min(a.size, b.size) >= 0.6) return r.name; }
+  for (const r of rows) { const b = toks(r.name), shared = [...a].filter((t) => b.has(t)).length; if (shared && shared / Math.min(a.size, b.size) >= 0.5) return r.name; }
   return null;
 }
 
@@ -48,7 +51,7 @@ function ruleTag(e, d) {                                    // deterministic fal
     const recent = (await pool.query(`select to_char(ts,'Mon DD HH24:MI') t, type, rail, amount, recipient_status rs from events
       where member_id=$1 and ts<=$2 and event_id<>$3 and type in ('Password Reset','Email Change','Phone Change','Address Change','Recipient Added','Payment Initiated','Branch Visit','Contact Center Call','Failed Login')
       order by ts desc limit 8`, [e.member_id, e.ts, e.id])).rows.reverse();
-    const user = `Event: ${e.type} (${e.cat}) via ${e.ch}${e.rail && e.rail !== 'Not Applicable' ? ', ' + e.rail : ''}${e.amt ? ', $' + Math.round(e.amt) : ''}${e.rs === 'New' ? ', NEW recipient' : ''}${e.ratio ? ', ' + e.ratio + 'x member baseline' : ''} at ${e.ts}.
+    const user = `Event: ${e.type} (${e.cat}) via ${e.ch}${e.dir === 'Incoming' ? ', INCOMING money (into the member\'s account)' : e.dir === 'Outgoing' ? ', outgoing' : ''}${e.rail && e.rail !== 'Not Applicable' ? ', ' + e.rail : ''}${e.amt ? ', $' + Math.round(e.amt) : ''}${e.rs === 'New' ? ', NEW recipient' : ''}${e.ratio ? ', ' + e.ratio + 'x member baseline' : ''} at ${e.ts}.
 Rules engine decision: ${decision ? decision.level + (decision.rules.length ? ' (' + decision.rules.join('+') + ')' : '') : 'n/a'}.
 Earlier events: ${recent.map((r) => `${r.t} ${r.type}${r.rail && r.rail !== 'Not Applicable' ? ' ' + r.rail : ''}${r.amount > 0 ? ' $' + Math.round(r.amount) : ''}${r.rs === 'New' ? ' new-recipient' : ''}`).join('; ') || 'none'}`;
     const handlers = {
@@ -56,6 +59,8 @@ Earlier events: ${recent.map((r) => `${r.t} ${r.type}${r.rail && r.rail !== 'Not
       create_tag: async ({ name, description }) => {
         name = String(name || '').trim().toLowerCase().replace(/\s+/g, '_'); description = String(description || '').trim().slice(0, 140);
         if (!NAME_RE.test(name) || BAD_SUFFIX.test(name) || description.length < 15) return { error: 'name must be lower_snake_case letters only, not end in high/low/event, and the description must explain the pattern (15+ chars)' };
+        if (/[\d$]/.test(description)) return { error: 'describe the general pattern, not this event: no amounts, dates or ids in the description' };
+        if (EVENT_TYPES.some((t) => name === t || name.startsWith(t + '_'))) return { error: 'a tag names a pattern, not the event type: pick an existing tag' };
         const all = (await pool.query('select name from tags')).rows, dupe = all.find((r) => r.name === name) ? null : similarTo(name, all);
         if (dupe) return { error: `too similar to the existing tag "${dupe}": use that one` };
         const n = (await pool.query('select count(*)::int n from tags')).rows[0].n;
@@ -83,7 +88,7 @@ Earlier events: ${recent.map((r) => `${r.t} ${r.type}${r.rail && r.rail !== 'Not
     if (routine) handlers.create_tag = async () => ({ error: 'everyday events must use an existing tag' });
     const use = routine ? tools.filter((t) => t.name === 'tag_event') : tools;
     const structured = async () => {                           // constrained decoding over the existing tag names: always a valid answer
-      const names = (await pool.query('select name from tags order by name')).rows.map((r) => r.name);
+      const names = (await pool.query(`select name from tags ${routine ? "where created_by='seed'" : ''} order by name`)).rows.map((r) => r.name);   // everyday events: the curated vocabulary only
       const j = await llm.chatSchema({ model, system: SYSTEM(await vocab()), user, kind: 'tag', label: e.member_id + ' ' + e.type, timeoutMs: cfg.tagTimeoutMs,
         schema: { type: 'object', properties: { tag: { type: 'string', enum: names }, risk: { type: 'string', enum: ['low', 'medium', 'high'] }, note: { type: 'string' } }, required: ['tag', 'risk', 'note'] } });
       return j && names.includes(j.tag) && ['low', 'medium', 'high'].includes(j.risk) ? { tag: j.tag, risk: j.risk, note: j.note } : null;
@@ -102,6 +107,8 @@ Earlier events: ${recent.map((r) => `${r.t} ${r.type}${r.rail && r.rail !== 'Not
       }
     } catch (err) { console.error('[tagger] llm failed, using rule tag:', err.message); }
     if (!out) { out = ruleTag(e, decision); source = 'rule'; used = null; }
+    // The data overrules the model: a deposit or purchase, a payment below the member's own usual amount, or the bank's own intervention never reaches the human review queue.
+    if (out.risk === 'high' && (routine || (e.ratio != null && e.ratio < 1) || e.cat === 'Intervention' || e.cat === 'Case & Recovery')) out.risk = 'medium';
     const alerted = !!(decision && decision.level !== 'none');
     const disagrees = !!((alerted && out.risk === 'low') || (!alerted && decision && out.risk === 'high'));
     await pool.query(`insert into event_notes (event_id, member_id, tag, category, risk, note, source, model, latency_ms, disagrees, new_tag) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
@@ -126,7 +133,7 @@ Earlier events: ${recent.map((r) => `${r.t} ${r.type}${r.rail && r.rail !== 'Not
     try {
       if (live.length + bg.length + idle.length > 50) return;
       const rows = (await pool.query(`select e.* from events e left join event_notes n on n.event_id=e.event_id where n.event_id is null and e.ingested_at < now() - interval '30 seconds' order by e.ts limit 100`)).rows;
-      for (const r of rows) enqueue({ history: true, idle: true, decision: null, event: { id: r.event_id, member_id: r.member_id, ts: new Date(r.ts).toISOString(), type: r.type, cat: r.category, ch: r.channel, rail: r.rail, amt: Number(r.amount), rs: r.recipient_status, ratio: r.ratio == null ? null : Number(r.ratio) } });
+      for (const r of rows) enqueue({ history: true, idle: true, decision: null, event: { id: r.event_id, member_id: r.member_id, ts: new Date(r.ts).toISOString(), type: r.type, cat: r.category, ch: r.channel, dir: r.direction, rail: r.rail, amt: Number(r.amount), rs: r.recipient_status, ratio: r.ratio == null ? null : Number(r.ratio) } });
     } catch (err) { console.error('[tagger] sweep', err.message); }
   }, 20000);
   console.log('[tagger] running. model:', model || 'none (rule tags only)', '| tools:', (llm.provider() || {}).name === 'ollama' ? 'native' : 'json fallback');

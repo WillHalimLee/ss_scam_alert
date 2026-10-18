@@ -28,7 +28,11 @@ async function ensureSchema() {
     alter table event_notes add column if not exists category text;
     alter table event_notes add column if not exists new_tag boolean not null default false;
     create table if not exists analyses (id serial primary key, member_id text not null, trigger_event text, trigger_reason text, context jsonb not null default '{}', verdict jsonb not null default '{}', action text not null, action_reason text, model text, latency_ms int, created_at timestamptz not null default now());
-    create index if not exists analyses_member on analyses (member_id, created_at);`);
+    create index if not exists analyses_member on analyses (member_id, created_at);
+    create table if not exists feedback (id serial primary key, source text not null, kind text not null, score int not null, comment text, case_id text, member_id text, outcome text, mode text, agent_version text, context jsonb not null default '{}', created_at timestamptz not null default now());
+    create index if not exists feedback_case on feedback (case_id);
+    create table if not exists interactions (id serial primary key, kind text not null, case_id text, member_id text, story text, mode text, tone text, agent_version text, ms int, detail jsonb not null default '{}', created_at timestamptz not null default now());
+    create index if not exists interactions_case on interactions (case_id, created_at);`);
   for (const [name, description] of SEED_TAGS) await pool.query('insert into tags (name, description) values ($1,$2) on conflict (name) do nothing', [name, description]);
 }
-module.exports = { pool, q, ensureSchema, SEED_TAGS };
+module.exports = { pool, q, ensureSchema };

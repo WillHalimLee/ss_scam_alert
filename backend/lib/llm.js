@@ -22,7 +22,7 @@ async function chatTools({ model, system, user, tools, handlers, terminal = [], 
     for (let i = 0; i < maxSteps && !result; i++) {
       const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), timeoutMs);
       let j; try {
-        const r = await fetch((process.env.OLLAMA_HOST || 'http://localhost:11434') + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
+        const r = await fetch(agent.OLLAMA + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
           body: JSON.stringify({ model, stream: false, keep_alive: '30m', options: { temperature: 0.2, num_predict: 200, num_ctx: 4096 }, tools: tools.map((t) => ({ type: 'function', function: t })), messages }) });
         j = await r.json(); if (!r.ok) throw new Error('upstream ' + r.status + ' ' + JSON.stringify(j).slice(0, 160));
       } finally { clearTimeout(to); }
@@ -47,16 +47,10 @@ async function chatTools({ model, system, user, tools, handlers, terminal = [], 
 /** Structured output (Ollama): decoding is constrained to the JSON schema, so a small model always returns a valid answer. */
 async function chatSchema({ model, system, user, schema, kind = 'tag', label = '', timeoutMs = 20000 }) {
   const p = agent.provider(); if (!p || p.name !== 'ollama') return null;
-  const messages = [{ role: 'system', content: system }, { role: 'user', content: user }], t0 = Date.now(); let out = null, error = null, usage = null;
-  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), timeoutMs);
-  try {
-    const r = await fetch((process.env.OLLAMA_HOST || 'http://localhost:11434') + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
-      body: JSON.stringify({ model, stream: false, keep_alive: '30m', format: schema, options: { temperature: 0.1, num_predict: 160, num_ctx: 4096 }, messages }) });
-    const j = await r.json(); if (!r.ok) throw new Error('upstream ' + r.status + ' ' + JSON.stringify(j).slice(0, 160));
-    usage = { prompt_tokens: j.prompt_eval_count, output_tokens: j.eval_count };
-    out = agent.extractJSON(j.message && j.message.content);
-  } catch (e) { error = e.message; } finally { clearTimeout(to); }
-  agent.trace.record({ kind, label, provider: 'ollama', model, latencyMs: Date.now() - t0, usage, input: { system, messages: [{ role: 'user', content: user }] }, output: { raw: JSON.stringify(out), parsed: out, final: out }, error: error || undefined, guardrails: [] });
+  const messages = [{ role: 'user', content: user }], meta = {}; let out = null, error = null;
+  try { out = agent.extractJSON(await agent.callModel(Object.assign({}, p, { model, timeoutMs }), system, messages, meta, schema, { temperature: 0.1, num_predict: 160, num_ctx: 4096 }) || ''); }
+  catch (e) { error = e.message; }
+  agent.trace.record({ kind, label, provider: 'ollama', model, latencyMs: meta.latencyMs, usage: meta.usage, input: { system, messages }, output: { raw: meta.raw, parsed: out, final: out }, error: error || undefined, guardrails: [] });
   if (error) throw new Error(error);
   return out;
 }

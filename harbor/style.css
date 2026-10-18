@@ -98,17 +98,12 @@ tr[data-id]{cursor:pointer}tr[data-id]:hover,tr[aria-selected=true]{background:v
 .dg-t{fill:var(--ink);font:600 14.5px system-ui,sans-serif}.dg-s{fill:var(--muted);font:13px system-ui,sans-serif}
 .dg-t.red{fill:var(--red)}.dg-t.amber{fill:var(--amber)}
 .dg-arrow{fill:none;stroke:var(--muted);stroke-width:2}.dg-head{fill:var(--muted)}
-.dg-grid{stroke:var(--line);stroke-width:1}
-.dg-dot{fill:var(--teal);stroke:var(--card);stroke-width:2}.dg-dot.pay{fill:var(--muted)}.dg-dot.last{fill:var(--red)}
-.dg-arm-line{stroke:var(--amber);stroke-width:2;stroke-dasharray:5 4}.dg-decide-line{stroke:var(--red);stroke-width:2.5}
-.dg-brk{fill:none;stroke:var(--muted);stroke-width:1.5}
 .checks{list-style:none;margin:6px 0 0;padding:0;font-size:14px}.checks li{padding:2px 0}
 .checks li.ok span:first-child{color:var(--green)}.checks li.no span:first-child{color:var(--muted)}
 .livebox{display:flex;gap:6px;width:100%;align-items:flex-end}
 .livebox textarea{flex:1;resize:none;border:1.5px solid var(--line);border-radius:12px;padding:8px 10px;font:inherit;background:var(--card);color:var(--ink)}
 .choice:disabled,.btn:disabled{opacity:.5;cursor:default}
 code{background:var(--line);padding:1px 5px;border-radius:5px;font-size:12.5px}
-.dg-lbl{paint-order:stroke;stroke:var(--card);stroke-width:4px;stroke-linejoin:round}
 .dg-box.dg-topic{fill:var(--teal-soft);stroke:var(--teal);stroke-dasharray:0}
 .dg-arrow.dash{stroke-dasharray:6 5}
 .dg-badge{fill:var(--teal);}.dg-badge.no{fill:var(--red)}.dg-badge-t{fill:var(--on-teal);font:700 11px system-ui,sans-serif}
@@ -250,10 +245,12 @@ nav button[aria-selected=true]{background:var(--ink);color:var(--card)}
 .phone.is-lock .notif .nhead{font-size:calc(13px*var(--ts))}
 .phone.is-lock .notif .nt{font-size:calc(15.5px*var(--ts))}
 .phone.is-lock .notif .nb{font-size:calc(14px*var(--ts))}
+.notif .nb{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden}   /* a notification shows a preview; the full message is in the app */
 .phone.is-lock .notif .small{font-size:calc(13px*var(--ts))}
 .phone.is-lock .notif .btn.sm{font-size:calc(14px*var(--ts));padding:10px 16px;min-height:44px}
 /* the microphone */
-.phone .mic{display:flex;align-items:center;justify-content:center;gap:12px;width:100%;min-height:calc(46px*var(--ts));border:0;border-radius:99px;background:var(--accent);color:#0F1E2B;font-weight:800;font-size:calc(15px*var(--ts));padding:10px 18px}
+.phone .mic{display:flex;align-items:center;justify-content:center;flex:none;width:calc(48px*var(--ts));height:calc(48px*var(--ts));margin:0 auto;padding:0;border:0;border-radius:50%;background:var(--accent);color:#0F1E2B;cursor:pointer}
+.phone .mic svg{width:calc(22px*var(--ts));height:calc(22px*var(--ts))}
 .phone .mic.on{background:var(--red);color:#fff;animation:ring 1.4s infinite}
 @keyframes ring{0%{box-shadow:0 0 0 0 rgba(179,38,30,.45)}70%{box-shadow:0 0 0 14px rgba(179,38,30,0)}100%{box-shadow:0 0 0 0 rgba(179,38,30,0)}}
 .phone .hear{width:100%;text-align:center;color:var(--muted);font-size:calc(14px*var(--ts));line-height:1.35;margin:2px 0 4px}
@@ -332,13 +329,6 @@ body.modal-open{overflow:hidden}
 @media(max-width:760px){.txn{grid-template-columns:1fr}.txn-mid{flex-direction:row;gap:10px}.txn-mid .arrow{transform:rotate(90deg)}}
 .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px 18px;margin:12px 0 0}
 .facts dt{font-size:12px;color:var(--muted);font-weight:700;letter-spacing:.04em;text-transform:uppercase}.facts dd{margin:1px 0 0;font-weight:600}
-.steps{list-style:none;margin:0;padding:0}
-.step{display:grid;grid-template-columns:34px 1fr;gap:12px;position:relative;padding-bottom:18px}
-.step:not(:last-child)::before{content:"";position:absolute;left:16px;top:34px;bottom:2px;width:2px;background:var(--line)}
-.step .dot{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:14px;background:var(--green);color:var(--card);z-index:1}
-.step.wait .dot{background:var(--card);color:var(--warn-ink);border:2px solid var(--warn)}
-.step.todo .dot{background:var(--card);color:var(--muted);border:2px dashed var(--muted)}
-.sh{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.sh b{font-size:16px}
 .sbody{margin-top:4px;font-size:14.5px;line-height:1.5;color:var(--ink)}
 .mini{margin:6px 0 0;padding-left:18px}.mini li{margin:2px 0}
 .chk{margin-top:8px;padding:8px 12px;background:var(--bg);border:1px solid var(--line);border-radius:10px;font-size:13.5px}
@@ -474,3 +464,79 @@ nav button.lit{animation:lit 1.1s ease-out 3}
 @media (prefers-reduced-motion:reduce){nav button.lit,.ping.show{animation:none}}
 
 .chip.tg.low{background:var(--bg);color:var(--muted)}.chip.tg.medium{background:var(--amber-soft,#FFF1D6);color:#7A4B00}.chip.tg.high{background:var(--red-soft,#FDE3E1);color:var(--red,#B3261E)}
+
+/* feedback: member 1-5 under the outcome, employee 1-5 in the console */
+.fb{margin:0 0 10px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+.fb textarea,.efb textarea{width:100%;box-sizing:border-box;margin:8px 0 6px;font:inherit;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink)}
+.fbrow{display:flex;gap:8px;margin-top:8px}
+.fbbtn,.ratebtn{flex:1;min-height:44px;border:1.5px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);font:inherit;font-weight:600;cursor:pointer}
+.fbbtn[aria-pressed=true],.ratebtn[aria-checked=true]{border-color:var(--teal);background:var(--teal-soft)}
+.rate{display:flex;gap:6px}
+.fbdone{margin:0 0 10px}
+.vmoney{display:flex;gap:8px;margin-top:8px}.vmoney label{flex:1}.vmoney input{width:100%;box-sizing:border-box;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
+
+/* reply panel: the mic sits right of Send. Tapping the conversation collapses the panel to a slim composer bar (like the Claude app). */
+.phone .livebox{align-items:center}
+.phone .livebox .mic{margin:0}
+.phone .foot.min{padding:8px 12px 10px}
+.phone .cmin{display:flex;align-items:center;gap:8px;width:100%}
+.phone .cmin-pill{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:1px;min-height:calc(46px*var(--ts));padding:8px 16px;border:1.5px solid var(--line);border-radius:24px;background:var(--bg);color:var(--muted);font:inherit;font-size:calc(15px*var(--ts));text-align:left;cursor:text;box-shadow:0 1px 3px rgba(15,30,43,.06)}
+.phone .cmin-pill:hover{border-color:color-mix(in srgb,var(--muted) 50%,var(--line))}
+.phone .cmin-pill span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.phone .cmin-pill small{font-size:calc(12px*var(--ts));color:var(--teal);font-weight:600}
+.phone .cmin .mic{margin:0}
+.phone .foot.min{animation:footfade .25s ease both}
+.rateends{display:flex;justify-content:space-between;gap:6px;margin-top:4px;font-size:12px}.rateends span:nth-child(2){text-align:center;flex:1}
+.phone .writing{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-style:italic}
+.phone .writing .dots{display:inline-flex;gap:3px}.phone .writing .dots span{width:5px;height:5px;border-radius:50%;background:currentColor;animation:blip 1.3s infinite ease-in-out}
+.phone .writing .dots span:nth-child(2){animation-delay:.2s}.phone .writing .dots span:nth-child(3){animation-delay:.4s}
+@media (prefers-reduced-motion:reduce){.phone .writing .dots span{animation:none}}
+
+/* case story at a glance: icon by actor, short title, key facts as chips; details on demand; new steps slide in, the waiting step pulses */
+.steps2{list-style:none;margin:6px 0 0;padding:0}
+.st2{display:grid;grid-template-columns:36px 1fr 28px;gap:10px;align-items:start;position:relative;padding:5px 0 9px}
+.st2:not(:last-child)::before{content:"";position:absolute;left:17px;top:42px;bottom:-4px;width:2px;background:var(--line)}
+.st2 .si{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;position:relative;z-index:1;background:var(--teal-soft);color:var(--ink)}
+.st2 .si svg{width:18px;height:18px}
+.st2[data-a=rules] .si{background:var(--red-soft);color:var(--red)}
+.st2[data-a=model] .si{background:var(--amber-soft);color:var(--amber)}
+.st2[data-a=harbor] .si{background:var(--accent);color:#0F1E2B}
+.st2[data-a=member] .si{background:var(--green-soft);color:var(--green)}
+.st2[data-a=you] .si{background:var(--ink);color:var(--card)}
+.st2.done .si::after{content:"✓";position:absolute;right:-4px;bottom:-4px;width:16px;height:16px;border-radius:50%;background:var(--green);color:#fff;font-size:10px;font-weight:800;display:grid;place-items:center;border:2px solid var(--card)}
+.st2.wait .si{animation:steppulse 1.6s infinite}
+.st2.todo .si{background:var(--card);color:var(--muted);border:2px dashed var(--muted)}
+.st2[data-a=you].todo .si{background:var(--ink);color:var(--card);border:0}
+.st-h{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;min-height:34px;align-content:center}.st-h b{font-size:15px}.st-h time{font-size:12px;color:var(--muted)}
+.sg{display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center;margin-top:1px;font-size:13.5px;line-height:1.4}
+.sg .chip{margin:0}.sg .arr{color:var(--muted);font-weight:700}.sg .gq{color:var(--muted);font-style:italic}
+.rulehit{display:inline-flex;align-items:center;gap:5px;font-size:13px;font-weight:600}.ticks{color:var(--green);font-weight:800;letter-spacing:1px}
+.nextact{font-size:15px}
+.sx{width:26px;height:26px;margin-top:4px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--muted);font-weight:700;line-height:1;padding:0}
+.sx:hover{color:var(--ink);border-color:var(--muted)}
+.st2 .sbody{margin-top:8px;padding:10px 12px;border-radius:10px;background:var(--bg);font-size:14px;line-height:1.5}
+.st2.fresh{animation:stepin .45s cubic-bezier(.2,.7,.2,1) both}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@keyframes stepin{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:none}}
+@keyframes steppulse{0%{box-shadow:0 0 0 0 rgba(242,177,52,.6)}70%{box-shadow:0 0 0 10px rgba(242,177,52,0)}100%{box-shadow:0 0 0 0 rgba(242,177,52,0)}}
+@media (prefers-reduced-motion:reduce){.st2.fresh,.st2.wait .si{animation:none}}
+.feedbox{position:relative;overflow-y:auto;overscroll-behavior:contain;border:1px solid var(--line);border-radius:10px;padding:0 8px}
+.feedbox .tl li:last-child{border-bottom:0}
+.feedcap{margin:4px 2px 0}
+
+/* Harbor asks a person to join: banner on the case, pulsing join button */
+.joinreq{display:flex;align-items:center;gap:12px;margin:0 0 12px;padding:12px 14px;border-radius:14px;background:var(--red-soft);border:1.5px solid var(--red);animation:stepin .4s cubic-bezier(.2,.7,.2,1) both}
+.joinreq .jr-ic{font-size:24px;line-height:1}.joinreq .jr-t{flex:1;display:flex;flex-direction:column;gap:2px}.joinreq .jr-t b{font-size:15px}
+.jr-pulse{animation:steppulse 1.6s infinite}
+@media (prefers-reduced-motion:reduce){.joinreq,.jr-pulse{animation:none}}
+
+/* FTC report draft: filed by the employee with the member, never sent automatically */
+.ftc .ftcwarn{margin:0 0 8px;padding:6px 10px;border-radius:8px;background:var(--amber-soft);color:var(--amber);font-weight:700;font-size:13px}
+.ftcok{display:flex;gap:8px;align-items:flex-start;margin:0 0 10px;line-height:1.35}
+.ftcf{display:grid;grid-template-columns:1fr auto;gap:2px 8px;padding:7px 0;border-top:1px dashed var(--line)}
+.ftcl{grid-column:1;font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+.ftcv{grid-column:1;font-size:13.5px;line-height:1.45}
+.ftcf .linkbtn{grid-column:2;grid-row:1 / span 2;align-self:center}
+.ftcf .linkbtn[disabled]{opacity:.4;cursor:not-allowed}
+.ftcbtns{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}.ftcbtns .btn{text-decoration:none}
+.ftcbtns [aria-disabled=true]{opacity:.45;cursor:not-allowed}

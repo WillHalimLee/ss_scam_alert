@@ -51,8 +51,15 @@ if [ -z "$PROVIDER" ]; then
   if [ -n "${ANTHROPIC_API_KEY:-}" ]; then PROVIDER=anthropic
   elif [ -n "${OPENAI_API_KEY:-}" ]; then PROVIDER=openai
   else
+    # Parallel requests: Harbor's first message, the analyst and the chat use the same 14B model at the same moment, and without
+    # this Ollama answers them one at a time. OLLAMA_NUM_PARALLEL lets each model serve several requests at once.
+    export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-4}" OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-2}"
+    if [ "$(uname)" = Darwin ] && [ "$(launchctl getenv OLLAMA_NUM_PARALLEL)" != "$OLLAMA_NUM_PARALLEL" ]; then   # the Ollama Mac app reads launchctl
+      launchctl setenv OLLAMA_NUM_PARALLEL "$OLLAMA_NUM_PARALLEL"; launchctl setenv OLLAMA_MAX_LOADED_MODELS "$OLLAMA_MAX_LOADED_MODELS"
+      pgrep -f "Ollama.app/Contents" >/dev/null 2>&1 && warn "Ollama parallel requests set to $OLLAMA_NUM_PARALLEL: quit and reopen the Ollama app (menu bar) to apply it"
+    fi
     if command -v ollama >/dev/null 2>&1 && ! curl -s -m 2 localhost:11434/api/tags >/dev/null 2>&1; then
-      warn "starting Ollama"; nohup ollama serve >"$LOGS/ollama.log" 2>&1 & BG_PIDS+=($!); sleep 3
+      warn "starting Ollama ($OLLAMA_NUM_PARALLEL parallel requests per model)"; nohup ollama serve >"$LOGS/ollama.log" 2>&1 & BG_PIDS+=($!); sleep 3
     fi
     if curl -s -m 2 localhost:11434/api/tags 2>/dev/null | grep -q "\"$MODEL\""; then PROVIDER=ollama
     else PROVIDER=none; warn "no AI provider found (set a key, or: ollama pull $MODEL). Using the guided script."

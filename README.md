@@ -29,6 +29,8 @@ Then open http://localhost:8787 and switch to "Live AI" in the Member app.
 
 Full pipeline (Docker required): see `backend/ARCHITECTURE.md`.
 
+**Checks**: `task test` scores the trigger rules on all 118 members. `task smoke` (with `task run` up) drives every story through the API, console, takeover and actions. `task eval` scores the chat agent and first messages on scripted member conversations.
+
 ## Honest notes
 
 - The trigger rules were tuned on the same synthetic data they are scored on, so results are in-sample and are not real fraud rates.

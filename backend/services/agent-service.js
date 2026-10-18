@@ -3,44 +3,10 @@
 //   HTTP: static front end, /api/demo/* (stream a demo story into Kafka), /api/console + /api/cases/* (real cases),
 //         /api/chat (direct model chat), /api/traces (model inspector), /api/pipeline (stats).
 //   Timer: no reply by due_at -> escalate to a human.
-const http = require('http'), crypto = require('crypto'), fs = require('fs'), path = require('path');
+const http = require('http'), crypto = require('crypto');
 const cfg = require('../lib/config'), { pool, q, ensureSchema } = require('../lib/db'), K = require('../lib/kafka'), llm = require('../lib/llm'), demo = require('../lib/demo');
-const agent = llm.agent;
-
-const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
-const railWord = (r) => ({ P2P: 'P2P payment', Wire: 'wire', Cash: 'cash withdrawal', 'External Transfer': 'external transfer', ACH: 'ACH payment' }[r] || String(r || 'payment').toLowerCase());
-/** What the member may be told about why something was flagged: plain facts, no rule names, thresholds or staff wording. */
-const MEMBER_WHY = { ATO: 'your password, email and phone number were all changed just before this payment started', RAMP: 'there have been a few payments to new people lately, and this one is bigger',
-  HIGHSTAKES: 'this is much more than usual, and it is hard to get back once sent', CONTACT: 'this came right after contact with Sound, and it is a large payment', FRESH: 'this is more than you usually send to someone new' };
-const whyFor = (a) => (a.rules ? a.rules.map((r) => (r.id === 'ANALYST' ? r.reason : MEMBER_WHY[r.id] || 'this looks different from usual activity')) : [a.summary]);
-const NEVER = 'Sound will never ask for your password or a code, and never asks you to move money.';
-
-/* ---------- outbound message composition ---------- */
-function template(a, name) {
-  const hi = name ? `Hi ${name}, this is Harbor, your security analyst at Sound.` : 'Hi, this is Harbor, your security analyst at Sound.';
-  const amt = a.amount ? money(a.amount) : 'a payment';
-  if (a.source === 'analyst') return `${hi} I noticed some activity on your account that I'd like to check with you: ${a.summary} Nothing has been paused, and nothing is wrong on your side. If anything looks unfamiliar, you can talk to a Sound employee right away. ${NEVER}`;
-  if (a.source === 'retro') return `${hi} I'm checking in on some recent activity: ${a.summary} Nothing is wrong on your side. If anything looks unfamiliar, you can talk to a Sound employee right away. ${NEVER} Does any of it look unfamiliar to you?`;
-  if (a.ato) return `${hi} A few minutes ago the password, email and phone number on your account were changed, and a ${amt} ${railWord(a.rail)} to a new recipient was started. I've paused it, so nothing has left your account, and you're in control. Was that you? Either answer is okay. Open your Sound app to review. ${NEVER}`;
-  if (a.level === 'confirm') return `${hi} I wanted to check in on your ${amt} ${railWord(a.rail)} to a newer recipient, since it's more than you usually send. There's no rush. ${NEVER} Could you tell me what this payment is for?`;
-  return `${hi} I'm sorry to interrupt. I've paused your ${amt} ${railWord(a.rail)} for a quick check, so nothing has been sent, and you're in control. There's no rush. ${NEVER} Could you tell me what this payment is for?`;
-}
-const COMPOSE_SYSTEM = `You write the FIRST outbound message from Harbor, the member's personal security analyst at Sound Credit Union, to a member about their account. Plain language, warm, calm and caring, like a kind person at the credit union who is looking out for them: 3-5 short sentences. Open with "Hi <first name>, this is Harbor, your security analyst at Sound." (without the name if none is given). Briefly acknowledge you may be interrupting, and reassure them there is no rush. Return ONLY JSON {"message": "..."}.
-Rules: say only what Sound's systems know, in plain words, from the facts given; if a payment is paused say nothing has been sent and the member is in control; you do NOT yet know why the member is doing this, so do not mention scams, impersonation, police, banks or government, and give no warnings or advice about them; never say "scam", "fraud" or "criminal"; never ask for passwords, PINs or codes; do not promise safety or recovery; do not include links; include that Sound never asks for a password or code or to move money; END with exactly one gentle open question the member can answer in their own words (if takeover is suspected, ask whether they made the changes and say either answer is okay; otherwise ask kindly what the payment is for). Write amounts like $1,574 (no cents). Use the member's first name only if given.
-The input JSON has a must_say list: every item must be stated in your own words. Style example (change the wording to fit the facts): {"message": "Hi Dana, this is Harbor, your security analyst at Sound. I'm sorry to interrupt. I've paused your $4,000 wire for a quick check, so nothing has been sent, and you're in control. There's no rush. Sound never asks for your password or a code, or to move money. Could you tell me what this payment is for?"}`;
-async function compose(a, name) {
-  const t0 = Date.now(), fallback = { text: template(a, name), source: 'template', ms: 0 };
-  try {
-    const out = await Promise.race([llm.completeJSON(COMPOSE_SYSTEM, JSON.stringify({ first_name: name || null, source: a.source, level: a.level, takeover_suspected: !!a.ato, payment_already_completed: !!a.completed,
-      amount: a.amount ? money(a.amount) : null, rail: railWord(a.rail), why: whyFor(a),
-      must_say: (a.completed ? ['the payment already went through'] : a.level === 'hold' ? ['the payment is paused', 'nothing has been sent', 'the member is in control'] : ['this is just a quick check', 'the payment is NOT paused or blocked: do not use the words paused, held or blocked']).concat(a.ato ? ['the password, email and phone number on the account were changed just before this payment started'] : []) }), 'compose', a.member_id),
-      new Promise((_, no) => setTimeout(() => no(new Error('compose timeout')), cfg.composeTimeoutMs))]);          // a slow model must not hold the member up: fall back to the template
-    const text = out && String(out.message || '').replace(/\s+/g, ' ').trim();
-    const heldOk = a.completed || (a.level === 'hold' ? /\b(paused|on hold|held)\b/i.test(text) && /\bnothing\b/i.test(text) : !/\b(paused|on hold|held|blocked)\b/i.test(text));      // a held payment must be said to be paused, with nothing sent
-    if (!text || text.length > 700 || agent.BAD_REPLY.some((r) => r.test(text)) || !/never ask/i.test(text) || !heldOk || !/\?/.test(text) || !/security analyst/i.test(text) || (a.ato && !/password/i.test(text))) return Object.assign(fallback, { ms: Date.now() - t0 });   // otherwise the safe template is used
-    return { text, source: 'llm', ms: Date.now() - t0, model: (llm.provider() || {}).model };
-  } catch (e) { return Object.assign(fallback, { ms: Date.now() - t0 }); }
-}
+const { compose, whyFor, money, railWord } = require('../lib/compose');
+const agent = llm.agent, { json, readBody, serveStatic } = require('../../harbor/http.js'), feedback = require('../../harbor/feedback.js'), { redact } = require('../../harbor/redact.js');
 
 /* ---------- alert handling ---------- */
 let prod;
@@ -63,7 +29,7 @@ async function onAlert(a) {
   // One conversation per member at a time. A second alert (for example the attacker's second payment) joins the open case.
   if (open) {
     await q('insert into case_alerts (case_id, alert_id) values ($1,$2)', [open.case_id, a.alert_id]);
-    const reasons = a.rules ? a.rules.map((r) => r.reason) : [a.summary];
+    const reasons = whyFor(a);                                                     // member-safe wording: the chat model may repeat it
     await q('update cases set ctx = jsonb_set(ctx, \'{reasons}\', (ctx->\'reasons\') || $2::jsonb), updated_at=now() where case_id=$1', [open.case_id, JSON.stringify(reasons)]);
     await say(open.case_id, 'system', `Another alert joined this case (${a.kind || 'rules'}${a.amount ? ', ' + money(a.amount) : ''}). Member not messaged again.`, 'system');
     console.log(`[agent] merged alert ${a.alert_id} into ${open.case_id}`);
@@ -81,7 +47,7 @@ async function onAlert(a) {
   await q(`insert into cases (case_id, member_id, status, channel, ato, ctx, due_at) values ($1,$2,'awaiting_member',$3,$4,$5, now() + ($6 || ' seconds')::interval)`,
     [caseId, a.member_id, channel, !!a.ato, JSON.stringify(ctx), String(cfg.caseTimeoutSec)]);
   await q('insert into case_alerts (case_id, alert_id) values ($1,$2)', [caseId, a.alert_id]);
-  await say(caseId, 'out', msg.text, msg.source, channel, a.member_id, { ms: msg.ms, model: msg.model || null });
+  await say(caseId, 'out', msg.text, msg.source, channel, a.member_id, { ms: msg.ms, model: msg.model || null, fallback: msg.reason || null });
   console.log(`[agent] case ${caseId} ${a.member_id} via ${channel} (${msg.source}): ${msg.text.slice(0, 90)}...`);
 }
 
@@ -97,22 +63,21 @@ async function reply(id, text) {
   const d = await caseDetail(id); if (!d) throw Object.assign(new Error('no such case'), { code: 404 });
   if (['resolved', 'escalated_human'].includes(d.case.status)) throw Object.assign(new Error('case closed'), { code: 409 });
   text = String(text || '').slice(0, 600).trim(); if (!text) throw Object.assign(new Error('empty'), { code: 400 });
-  await say(id, 'in', text, 'member');
-  const hist = d.messages.filter((m) => m.direction !== 'system').map((m) => ({ role: m.direction === 'out' ? 'assistant' : 'user', content: m.body })); hist.push({ role: 'user', content: text });
+  await say(id, 'in', redact(text), 'member');                                    // a typed password or code is never stored
+  const hist = d.messages.filter((m) => m.direction !== 'system').map((m) => ({ role: m.direction === 'out' ? 'assistant' : 'user', content: m.body }));
+  hist.push({ role: 'user', content: text });                                     // raw: the agent detects a shared secret, then masks it before the model sees it
   const r = await agent.chat({ ctx: d.case.ctx, messages: hist });
   await say(id, 'out', r.reply, 'llm', d.case.channel, d.case.member_id);
   const signals = Object.assign({}, d.case.signals); for (const k in r.signals) if (r.signals[k]) signals[k] = true;
   await q(`update cases set status='in_conversation', signals=$2, handoff_note=$3, due_at=null, updated_at=now() where case_id=$1`, [id, JSON.stringify(signals), r.handoff_note]);
-  return { reply: r.reply, signals, red: Object.keys(signals).some((k) => agent.RED_FLAGS.includes(k) && signals[k]), member_state: r.member_state, guarded: !!r.guarded, handoff_note: r.handoff_note };
+  return { reply: r.reply, signals, red: Object.keys(signals).some((k) => agent.RED_FLAGS.includes(k) && signals[k]), member_state: r.member_state, guarded: !!r.guarded, handoff_note: r.handoff_note, tone: r.tone, agent_version: r.agent_version };
 }
 async function resolve(id, outcome, status) {
   await q(`update cases set status=$2, outcome=$3, due_at=null, updated_at=now() where case_id=$1`, [id, status, outcome]);
   await say(id, 'system', `Case ${status}: ${outcome}`, 'system');
 }
 
-/* ---------- http ---------- */
 /* ---------- demo: stream a story into the pipeline, read back what it decided ---------- */
-const readBody = (req) => new Promise((ok) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 20000) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(b || '{}')); } catch { ok({}); } }); });
 const iso = (d) => (d ? new Date(d).toISOString() : null);
 const streams = new Map();                                                         // member -> current stream id; a newer start cancels an older one
 async function demoStart(mid, planned) {
@@ -130,7 +95,7 @@ async function demoStart(mid, planned) {
   return { triggerEventId: t.eventId, historyTotal: hist.length, trigger: { amount: t.event.amt, rail: t.event.rail, recipient: t.event.rs } };
 }
 async function demoSend(mid, eventId) {
-  const t = demo.triggerFor(mid, undefined), env = demo.envelopeById(mid, eventId || (t && t.eventId));
+  const env = demo.envelopeById(mid, eventId || (demo.triggerFor(mid) || {}).eventId);
   if (!env) throw Object.assign(new Error('no such event'), { code: 404 });
   await K.send(prod, cfg.topics.raw, mid, env); return { sent: env.id, at: Date.now() };
 }
@@ -153,24 +118,14 @@ async function view(mid, eventId) {
   return { member_id: mid, first_name: member && member.first_name, processed, tags, analysis, event, decision, alert: ald && { alert_id: ald.alert_id, level: ald.level, kind: ald.kind, payload: ald.payload, published: ald.published },
     note, case: c, messages,
     timings: { ingested: iso(event && event.ingested_at), decided: iso(decision && decision.decided_at), decide_ms: decision && decision.latency_ms, alerted: iso(ald && ald.created_at),
-      composed: iso(out && out.created_at), delivered: iso(out && out.delivered_at), compose_ms: out && out.meta && out.meta.ms, compose_model: out && out.meta && out.meta.model, compose_source: out && out.source } };
+      composed: iso(out && out.created_at), delivered: iso(out && out.delivered_at), compose_ms: out && out.meta && out.meta.ms, compose_model: out && out.meta && out.meta.model, compose_source: out && out.source, compose_fallback: out && out.meta && out.meta.fallback } };
 }
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
-const WEB = path.join(__dirname, '..', '..', 'harbor');
-function serveStatic(req, res, p) {
-  const f = path.join(WEB, p === '/' ? 'index.html' : decodeURIComponent(p));
-  if (!f.startsWith(WEB) || /(agent|server|trace)\.js$|\.traces/.test(f) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); return res.end('not found'); }
-  res.writeHead(200, { 'content-type': TYPES[path.extname(f)] || 'application/octet-stream', 'cache-control': 'no-cache' });
-  fs.createReadStream(f).pipe(res);
-}
-
-function json(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type', 'access-control-allow-methods': 'GET,POST,OPTIONS' }); res.end(JSON.stringify(obj)); }
 async function route(req, res) {
   const url = new URL(req.url, 'http://x'), p = url.pathname;
   if (agent.trace.handle(req, res)) return;                   // model inspector endpoints
   if (req.method === 'OPTIONS') return json(res, 204, {});
   if (p === '/api/status') { const pr = llm.provider(); return json(res, 200, { backend: true, live: !!pr, provider: pr && pr.name, model: pr && pr.model, timeoutMs: pr && pr.timeoutMs }); }
-  if (p === '/api/chat' && req.method === 'POST') { try { return json(res, 200, await agent.chat(await readBody(req))); } catch (e) { console.error('chat error:', e.message); return json(res, 502, { error: 'agent unavailable' }); } }
+  if (p === '/api/chat' && req.method === 'POST') { try { return json(res, 200, await agent.chat(await readBody(req))); } catch (e) { console.error('chat error:', e.message); return e.code === 400 ? json(res, 400, { error: 'bad request' }) : json(res, 502, { error: 'agent unavailable' }); } }
   if (p === '/api/demo/start' && req.method === 'POST') { const b = await readBody(req); return json(res, 200, await demoStart(String(b.member || ''), b.planned)); }
   if (p === '/api/demo/send' && req.method === 'POST') { const b = await readBody(req); return json(res, 200, await demoSend(String(b.member || ''), b.event)); }
   if (p === '/api/analyst/run' && req.method === 'POST') {                          // ask the analyst agent to look at a member now
@@ -197,25 +152,42 @@ async function route(req, res) {
   if (p === '/api/cases') return json(res, 200, (await q(`select c.case_id, c.member_id, c.status, c.channel, c.ato, c.outcome, c.opened_at, c.due_at, c.signals, c.handoff_note, c.ctx,
       (select body from messages m where m.case_id=c.case_id order by id limit 1) as opening from cases c order by c.opened_at desc limit 60`)).rows);
   let m = p.match(/^\/api\/cases\/([\w-]+)$/); if (m) { const d = await caseDetail(m[1]); return d ? json(res, 200, d) : json(res, 404, { error: 'not found' }); }
+  if (p === '/api/feedback' && req.method === 'POST') {                          // member thumbs or employee 1-5, with a snapshot of the case at that moment
+    const row = feedback.clean(await readBody(req)); if (!row) return json(res, 400, { error: 'bad feedback' });
+    const d = row.case_id ? await caseDetail(row.case_id) : null;               // the case may be reset later; the snapshot keeps what was rated
+    if (d) Object.assign(row.context, { case: { status: d.case.status, outcome: d.case.outcome, channel: d.case.channel, ato: d.case.ato, signals: d.case.signals, handoff_note: d.case.handoff_note, reasons: d.case.ctx.reasons },
+      stored_messages: d.messages.map((m) => ({ direction: m.direction, source: m.source, body: m.body, at: m.created_at })), alerts: d.alerts.map((a) => ({ source: a.source, kind: a.kind, level: a.level, tag: a.tag, risk: a.risk })) });
+    const r = await q(`insert into feedback (source, kind, score, comment, case_id, member_id, outcome, mode, agent_version, context) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id`,
+      [row.source, row.kind, row.score, row.comment, row.case_id, row.member_id || (d && d.case.member_id), row.outcome, row.mode, agent.VERSION, JSON.stringify(row.context)]);
+    return json(res, 200, { ok: true, id: r.rows[0].id });
+  }
+  if (p === '/api/feedback') return json(res, 200, (await q(`select id, source, kind, score, comment, case_id, member_id, outcome, mode, agent_version, created_at from feedback order by id desc limit 200`)).rows);
+  if (p === '/api/interactions' && req.method === 'POST') {
+    const rows = feedback.cleanEvents(await readBody(req));
+    for (const r of rows) await q('insert into interactions (kind, case_id, member_id, story, mode, tone, agent_version, ms, detail) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)', [r.kind, r.case_id, r.member_id, r.story, r.mode, r.tone, agent.VERSION, r.ms, JSON.stringify(r.detail)]);
+    return json(res, 200, { ok: true, n: rows.length });
+  }
+  if (p === '/api/interactions') return json(res, 200, (await q('select id, kind, case_id, member_id, story, mode, tone, agent_version, ms, detail, created_at from interactions order by id desc limit 500')).rows);
   if (p === '/api/review') return json(res, 200, (await q(`select r.id, r.event_id, r.member_id, r.reason, r.status, r.created_at, n.tag, n.risk from review_queue r left join event_notes n on n.event_id=r.event_id order by r.id desc limit 40`)).rows);
   if (p === '/api/retro') return json(res, 200, (await q('select finding_key, member_id, kind, summary, created_at from retro_findings order by created_at desc limit 40')).rows);
-  m = p.match(/^\/api\/cases\/([\w-]+)\/(reply|resolve|log|action|takeover)$/);
+  m = p.match(/^\/api\/cases\/([\w-]+)\/(reply|resolve|log|action|takeover|join)$/);
   if (m && req.method === 'POST') {
     const body = await readBody(req);
     if (m[2] === 'reply') return json(res, 200, await reply(m[1], body.text));
     if (m[2] === 'log') {                                     // scripted chat mirrored into the case: stored, not delivered
       const c = (await q('select channel, member_id from cases where case_id=$1', [m[1]])).rows[0]; if (!c) return json(res, 404, { error: 'not found' });
       const dir = ['in', 'out', 'system'].includes(body.direction) ? body.direction : 'system';
-      await say(m[1], dir, String(body.text || '').slice(0, 600), String(body.source || 'script').slice(0, 20), c.channel, c.member_id, null, false);
+      await say(m[1], dir, redact(String(body.text || '').slice(0, 600)), String(body.source || 'script').slice(0, 20), c.channel, c.member_id, null, false);
       await q(`update cases set status=case when status in ('awaiting_member') then 'in_conversation' else status end, due_at=null, updated_at=now() where case_id=$1`, [m[1]]);
       return json(res, 200, { ok: true });
     }
-    if (['log', 'action', 'takeover'].includes(m[2]) && !(await q('select 1 from cases where case_id=$1', [m[1]])).rowCount) return json(res, 404, { error: 'not found' });   // the story was reset while a message was in flight
+    if (['action', 'takeover', 'resolve', 'join'].includes(m[2]) && !(await q('select 1 from cases where case_id=$1', [m[1]])).rowCount) return json(res, 404, { error: 'not found' });   // the story was reset while a message was in flight
     if (m[2] === 'takeover') {                                // a person takes the chat from the agent (or hands it back)
       const on = !!body.on;
       await q(`update cases set status=$2, due_at=null, updated_at=now() where case_id=$1 and status not in ('resolved')`, [m[1], on ? 'escalated_human' : 'in_conversation']);
       await say(m[1], 'system', on ? 'A Sound team member took over the chat.' : 'The chat was handed back to Harbor.', 'employee'); return json(res, 200, { ok: true });
     }
+    if (m[2] === 'join') { await say(m[1], 'system', 'Harbor asked a Sound team member to join: ' + String(body.reason || 'needs a person').slice(0, 200), 'system'); return json(res, 200, { ok: true }); }   // the agent asks for a person; code decides when
     if (m[2] === 'action') { await say(m[1], 'system', String(body.text || '').slice(0, 300), 'employee'); return json(res, 200, { ok: true }); }
     const status = ['human', 'no_response', 'timeout', 'callback', 'callback_fast', 'ato_stop'].includes(body.outcome) ? 'escalated_human' : 'resolved';
     await resolve(m[1], String(body.outcome || 'resolved').slice(0, 60), status); return json(res, 200, { ok: true, status });

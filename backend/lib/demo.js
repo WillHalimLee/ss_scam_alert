@@ -13,7 +13,6 @@ function triggerFor(mid, planned) {
   return { eventId: d.eventId, index, event: evs[index] };
 }
 const historyOf = (mid, t) => eventsOf(mid).slice(0, t.index).map((e) => Object.assign(ev.toEnvelope(mid, e), { h: 1 }));
-const triggerEnvelope = (mid, t) => ev.toEnvelope(mid, t.event);
 const envelopeById = (mid, id) => { const e = eventsOf(mid).find((x) => x.id === id); return e ? ev.toEnvelope(mid, e) : null; };
 const known = (mid) => data().members.some((m) => m.id === mid);
-module.exports = { triggerFor, historyOf, triggerEnvelope, envelopeById, known };
+module.exports = { triggerFor, historyOf, envelopeById, known };

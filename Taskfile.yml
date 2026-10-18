@@ -58,12 +58,22 @@ tasks:
   retro:
     desc: Run the retro job once (as of Oct 5 so it sees the slow-ramp pattern).
     cmds:
-      - cd backend && node services/retro.js --once --as-of 2026-10-05T00:00:00Z
+      - cd backend && HARBOR_PROVIDER="${HARBOR_PROVIDER:-ollama}" HARBOR_MODEL="${HARBOR_MODEL:-qwen2.5:14b}" node services/retro.js --once --as-of 2026-10-05T00:00:00Z
 
   test:
     desc: Score the trigger engine on all 118 synthetic members.
     cmds:
       - node harbor/test_engine.js
+
+  smoke:
+    desc: "End-to-end check of the running stack: every story through the API, console, takeover and actions. Resets those stories. Example: task smoke -- M1003"
+    cmds:
+      - cd backend && node scripts/smoke.js {{.CLI_ARGS}}
+
+  eval:
+    desc: "Score the chat agent and first messages on scripted member conversations (needs a provider; Ollama by default). Example: task eval -- --repeat 3"
+    cmds:
+      - HARBOR_PROVIDER="${HARBOR_PROVIDER:-ollama}" HARBOR_MODEL="${HARBOR_MODEL:-qwen2.5:14b}" HARBOR_TRACE_FILE="${HARBOR_TRACE_FILE:-/dev/null}" node harbor/eval_agent.js {{.CLI_ARGS}}
 
   inspect:
     desc: Open the model inspector (inputs, thinking, outputs of every LLM call). Needs the chat server running.
