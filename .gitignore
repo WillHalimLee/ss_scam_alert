@@ -4,3 +4,6 @@ node_modules/
 artifact_dist/
 # organizer-provided documents, not ours to republish
 data/*.docx
+
+# model traces (may contain member messages)
+harbor/.traces/

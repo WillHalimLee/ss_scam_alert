@@ -111,3 +111,4 @@ code{background:var(--line);padding:1px 5px;border-radius:5px;font-size:12.5px}
 .dg-badge{fill:var(--teal);}.dg-badge.no{fill:var(--red)}.dg-badge-t{fill:#fff;font:700 11px system-ui,sans-serif}
 .code{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font:13px/1.5 ui-monospace,Menlo,monospace;overflow:auto}
 .convo{display:flex;flex-direction:column;max-height:340px;overflow:auto;padding:4px}
+.navlink{color:#cfe1ea;text-decoration:none;padding:8px 14px;border-radius:8px;border:1px dashed rgba(255,255,255,.35);align-self:center}.navlink:hover{background:rgba(255,255,255,.12);color:#fff}

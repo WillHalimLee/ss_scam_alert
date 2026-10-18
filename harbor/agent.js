@@ -1,4 +1,5 @@
 /* Harbor agent core: system prompt, provider calls, and output guardrails. Node only. */
+const trace = require('./trace.js');
 const SIGNALS = [
   'authority_pressure',     // someone claiming to be bank/police/government/lawyer asks the member to move money
   'secrecy_or_isolation',   // told to keep it secret, stay on the phone, not tell the bank or family
@@ -73,7 +74,8 @@ function sanitize(raw) {
   const out = { reply: '', signals: {}, member_state: 'calm', handoff_note: '' };
   if (!raw || typeof raw !== 'object') return null;
   let reply = String(raw.reply || '').replace(/\s+/g, ' ').trim().slice(0, 600);
-  if (!reply || BAD_REPLY.some((r) => r.test(reply))) { out.guarded = true; reply = SAFE_FALLBACK; }
+  const hit = BAD_REPLY.find((r) => r.test(reply));
+  if (!reply || hit) { out.guarded = true; out.guard_reason = !reply ? 'empty reply' : 'blocked pattern ' + hit.source.slice(0, 70); out.blocked_reply = reply; reply = SAFE_FALLBACK; }
   out.reply = reply;
   const given = Array.isArray(raw.signals) ? raw.signals : Object.keys(raw.signals || {}).filter((k) => raw.signals[k] === true);
   for (const s of SIGNALS) out.signals[s] = given.includes(s);
@@ -108,23 +110,33 @@ async function post(url, headers, body, ms) {
   } finally { clearTimeout(t); }
 }
 
-async function callModel(p, system, messages) {
+async function callModelInner(p, system, messages, meta) {
   if (p.name === 'openai') {
     const j = await post('https://api.openai.com/v1/chat/completions', { authorization: 'Bearer ' + process.env.OPENAI_API_KEY },
       { model: p.model, temperature: 0.4, max_tokens: 500, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, ...messages] }, 12000);
+    meta.usage = j.usage ? { prompt_tokens: j.usage.prompt_tokens, output_tokens: j.usage.completion_tokens } : null;
     return j.choices[0].message.content;
   }
   if (p.name === 'anthropic') {
     const j = await post('https://api.anthropic.com/v1/messages', { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
       { model: p.model, max_tokens: 500, temperature: 0.4, system, messages }, 12000);
+    meta.usage = j.usage ? { prompt_tokens: j.usage.input_tokens, output_tokens: j.usage.output_tokens } : null;
     return j.content.map((c) => c.text || '').join('');
   }
   if (p.name === 'ollama') {
     const j = await post((process.env.OLLAMA_HOST || 'http://localhost:11434') + '/api/chat', {},
       { model: p.model, stream: false, format: 'json', keep_alive: '30m', options: { temperature: 0.4, num_predict: 450 }, messages: [{ role: 'system', content: system }, ...messages] }, p.timeoutMs);
+    meta.usage = { prompt_tokens: j.prompt_eval_count, output_tokens: j.eval_count, model_ms: j.eval_duration ? Math.round(j.eval_duration / 1e6) : null,
+      load_ms: j.load_duration ? Math.round(j.load_duration / 1e6) : null, tokens_per_sec: j.eval_count && j.eval_duration ? +(j.eval_count / (j.eval_duration / 1e9)).toFixed(1) : null };
     return j.message.content;
   }
   return mock(messages);
+}
+/** Calls the model. Pass a `meta` object to get back raw output, latency and token usage (used by the trace log). */
+async function callModel(p, system, messages, meta = {}) {
+  const t0 = Date.now();
+  try { const text = await callModelInner(p, system, messages, meta); meta.raw = text; meta.latencyMs = Date.now() - t0; return text; }
+  catch (e) { meta.error = e.message; meta.latencyMs = Date.now() - t0; throw e; }
 }
 
 /* Offline test double: keyword signals + templated reply. Lets the whole pipeline run without a key. */
@@ -167,19 +179,30 @@ async function chat(body) {
   const messages = (Array.isArray(body.messages) ? body.messages : []).slice(-16)
     .filter((m) => m && (m.role === 'user' || m.role === 'assistant')).map((m) => ({ role: m.role, content: String(m.content || '').slice(0, 600) }));
   if (!messages.length || messages[messages.length - 1].role !== 'user') throw Object.assign(new Error('bad request'), { code: 400 });
-  const text = await callModel(p, systemPrompt(safeCtx), messages);
-  const clean = sanitize(extractJSON(text));
-  if (!clean) throw new Error('model returned invalid JSON');
+  const system = systemPrompt(safeCtx), meta = {}, guardrails = [];
+  let text;
+  try { text = await callModel(p, system, messages, meta); }
+  catch (e) { trace.record({ kind: 'chat', provider: p.name, model: p.model, latencyMs: meta.latencyMs, input: { system, messages, ctx: safeCtx }, error: e.message }); throw e; }
+  const parsed = extractJSON(text);
+  const clean = sanitize(parsed);
+  if (!clean) { trace.record({ kind: 'chat', provider: p.name, model: p.model, latencyMs: meta.latencyMs, usage: meta.usage, input: { system, messages, ctx: safeCtx }, output: { raw: text }, error: 'model returned invalid JSON' }); throw new Error('model returned invalid JSON'); }
+  if (clean.guarded) guardrails.push({ type: 'reply_filter', detail: clean.guard_reason, blocked: clean.blocked_reply });
+  const modelReply = clean.reply;
   const last = messages[messages.length - 1].content;
   if (/\b(password|passcode|pin|passphrase|security code|one-?time code|verification code|ssn)\b[^.\n]{0,25}\b(is|are|was|=|:)\s*\S+/i.test(last) || /\b\d{6}\b/.test(last)) {
     clean.signals.credential_shared = true;
+    guardrails.push({ type: 'credential_override', detail: 'member message looked like a password, PIN or code; model reply replaced with a fixed warning' });
     clean.reply = 'Please don\'t share passwords, PINs or codes with anyone, including me. Sound will never ask for them. If you\'ve already shared one, a Sound employee can help you secure your account right away.';
   }
   if (clean.signals.relative_pressure && !/sound employee|privately/i.test(clean.reply))
-    clean.reply += ' If you\'d like, you can talk privately with a Sound employee. No one else will be told.';
+    { guardrails.push({ type: 'private_conversation_added', detail: 'relative_pressure signal set; private-conversation offer appended' }); clean.reply += ' If you\'d like, you can talk privately with a Sound employee. No one else will be told.'; }
   clean.red = RED_FLAGS.some((s) => clean.signals[s]);
   clean.provider = p.name;
+  trace.record({ kind: 'chat', provider: p.name, model: p.model, latencyMs: meta.latencyMs, usage: meta.usage,
+    input: { system, messages, ctx: safeCtx },
+    output: { raw: text, parsed: parsed || null, model_reply: modelReply, final: { reply: clean.reply, signals: Object.keys(clean.signals).filter((k) => clean.signals[k]), member_state: clean.member_state, handoff_note: clean.handoff_note, red_flag: clean.red } },
+    guardrails });
   return clean;
 }
 
-module.exports = { chat, provider, callModel, extractJSON, BAD_REPLY, SAFE_FALLBACK, SIGNALS, RED_FLAGS, systemPrompt, sanitize };
+module.exports = { trace, chat, provider, callModel, extractJSON, BAD_REPLY, SAFE_FALLBACK, SIGNALS, RED_FLAGS, systemPrompt, sanitize };

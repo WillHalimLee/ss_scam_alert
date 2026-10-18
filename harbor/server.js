@@ -15,6 +15,7 @@ function send(res, code, obj) {
 }
 http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
+  if (agent.trace.handle(req, res)) return;                 // /api/traces, /api/traces/stream, /api/traces/clear
   if (req.url === '/api/status') { const p = agent.provider(); return send(res, 200, { live: !!p, provider: p && p.name, model: p && p.model, timeoutMs: p && p.timeoutMs }); }
   if (req.url === '/api/chat' && req.method === 'POST') {
     if (limited(req.socket.remoteAddress)) return send(res, 429, { error: 'slow down' });
@@ -26,7 +27,7 @@ http.createServer(async (req, res) => {
     return;
   }
   const f = path.join(__dirname, req.url === '/' ? 'index.html' : decodeURIComponent(req.url.split('?')[0]));
-  if (!f.startsWith(__dirname) || /agent\.js$|server\.js$/.test(f) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); return res.end('not found'); }
+  if (!f.startsWith(__dirname) || /agent\.js$|server\.js$|trace\.js$|\.traces/.test(f) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); return res.end('not found'); }
   res.writeHead(200, { 'content-type': TYPES[path.extname(f)] || 'application/octet-stream' }); fs.createReadStream(f).pipe(res);
 }).listen(PORT, () => {
   const p = agent.provider();

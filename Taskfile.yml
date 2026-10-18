@@ -1,0 +1,87 @@
+# https://taskfile.dev   Run `task` to list tasks, `task run` to start everything.
+version: '3'
+silent: true
+
+tasks:
+  default:
+    cmds:
+      - task --list
+
+  run:
+    desc: Start everything (Docker, backend, demo events, chat server) and open the app. Ctrl+C stops it.
+    cmds:
+      - bash scripts/run.sh
+
+  chat:
+    desc: Chat server only (no Docker). Uses local Ollama unless HARBOR_PROVIDER is set.
+    cmds:
+      - HARBOR_PROVIDER="${HARBOR_PROVIDER:-ollama}" HARBOR_MODEL="${HARBOR_MODEL:-qwen2.5:14b}" node harbor/server.js
+
+  stop:
+    desc: Stop the chat server and backend services (leaves Docker running).
+    cmds:
+      - bash backend/scripts/stop-all.sh || true
+      - for p in 8787 8790; do lsof -ti tcp:$p | xargs kill 2>/dev/null || true; done
+      - echo "stopped"
+
+  down:
+    desc: Stop everything including Docker containers (keeps the database volume).
+    cmds:
+      - task: stop
+      - cd backend && docker compose down
+
+  status:
+    desc: Show what is running.
+    cmds:
+      - bash scripts/status.sh
+
+  infra:
+    desc: Start Redpanda (Kafka) and Postgres only.
+    cmds:
+      - cd backend && npm install --no-audit --no-fund >/dev/null && docker compose up -d --wait
+
+  seed:
+    desc: Load the members table.
+    cmds:
+      - cd backend && node scripts/seed.js
+
+  reset:
+    desc: Wipe the pipeline tables and Kafka topics for a clean run.
+    cmds:
+      - cd backend && node scripts/reset.js
+
+  replay:
+    desc: "Replay demo events into Kafka. Example: DEMO_MEMBERS=M1003,M1001 task replay"
+    cmds:
+      - cd backend && node services/replayer.js --members "${DEMO_MEMBERS:-M1003,M1001,M1039,M1057,M1002,M1004}" --rate 60
+
+  retro:
+    desc: Run the retro job once (as of Oct 5 so it sees the slow-ramp pattern).
+    cmds:
+      - cd backend && node services/retro.js --once --as-of 2026-10-05T00:00:00Z
+
+  test:
+    desc: Score the trigger engine on all 118 synthetic members.
+    cmds:
+      - node harbor/test_engine.js
+
+  inspect:
+    desc: Open the model inspector (inputs, thinking, outputs of every LLM call). Needs the chat server running.
+    cmds:
+      - open "http://localhost:${PORT:-8787}/inspector.html" || echo "open http://localhost:8787/inspector.html"
+
+  traces:clear:
+    desc: Delete the recorded model traces.
+    cmds:
+      - rm -f harbor/.traces/traces.jsonl harbor/.traces/traces.jsonl.1 && echo "traces cleared"
+
+  logs:
+    desc: Follow backend service logs.
+    cmds:
+      - tail -n 20 -f backend/.logs/scorer.log backend/.logs/tagger.log backend/.logs/agent-service.log
+
+  pages:
+    desc: Refresh docs/ (the GitHub Pages build) from harbor/.
+    cmds:
+      - for f in style.css app.js engine.js data.js snapshot.js index.html; do cp harbor/$f docs/$f; done
+      - echo "docs/ refreshed. Commit and push to publish."

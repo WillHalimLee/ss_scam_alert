@@ -27,7 +27,7 @@ function ruleTag(e, d) {                                    // deterministic fal
 Rules engine decision: ${decision ? decision.level + (decision.rules.length ? ' (' + decision.rules.join('+') + ')' : '') : 'n/a (not a payment)'}.
 Earlier key events: ${recent.map((r) => `${r.t} ${r.type}${r.rail && r.rail !== 'Not Applicable' ? ' ' + r.rail : ''}${r.amount > 0 ? ' $' + Math.round(r.amount) : ''}${r.rs === 'New' ? ' new-recipient' : ''}`).join('; ') || 'none'}`;
     let out = null, source = 'llm', model = (llm.provider() || {}).model || null;
-    try { out = await llm.completeJSON(SYSTEM, user); } catch (err) { console.error('[tagger] llm failed, using rule tag:', err.message); }
+    try { out = await llm.completeJSON(SYSTEM, user, 'tag', e.member_id + ' ' + e.type); } catch (err) { console.error('[tagger] llm failed, using rule tag:', err.message); }
     if (!out || !TAGS.includes(out.tag) || !['low', 'medium', 'high'].includes(out.risk)) { out = ruleTag(e, decision); source = 'rule'; model = null; }
     const alerted = !!(decision && decision.level !== 'none');
     const disagrees = !!((alerted && out.risk === 'low') || (!alerted && decision && out.risk === 'high'));

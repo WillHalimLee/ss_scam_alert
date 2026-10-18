@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harbor Model Inspector</title>
+<style>
+:root{--bg:#f3f6f8;--card:#fff;--ink:#14232e;--muted:#5b6b78;--line:#dbe3e9;--teal:#0b6b7a;--teal-soft:#e3f3f5;--amber:#9a5b00;--amber-soft:#fff3dc;--red:#b3261e;--red-soft:#fde8e6;--green:#1d7a46;--green-soft:#e2f4ea;--code:#eef2f5;--navy:#0f2f45}
+@media (prefers-color-scheme:dark){:root{--bg:#0c1820;--card:#13252f;--ink:#e7eef2;--muted:#9bb0bd;--line:#26404d;--teal:#4cc3d4;--teal-soft:#123741;--amber:#ffb454;--amber-soft:#3a2b10;--red:#ff8a80;--red-soft:#3d1a18;--green:#6fd69b;--green-soft:#15341f;--code:#0b1a22;--navy:#0a1d2a}}
+*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;flex-direction:column}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}:focus-visible{outline:3px solid var(--teal);outline-offset:2px}
+header{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;padding:10px 16px;background:var(--navy);color:#fff}
+header h1{font-size:16px;margin:0;font-weight:700}
+header .sp{flex:1}
+header input[type=text]{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:5px 9px;width:230px}
+header label{display:flex;gap:5px;align-items:center;font-size:13px}
+.btn{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28);color:#fff;border-radius:8px;padding:5px 11px}
+.btn:hover{background:rgba(255,255,255,.24)}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;background:#888;margin-right:6px}
+.dot.on{background:#4ade80}.dot.off{background:#f87171}
+.layout{flex:1;min-height:0;display:grid}
+@media(max-width:860px){.layout{grid-template-columns:1fr;grid-template-rows:40% 60%}}
+aside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--card)}
+#list{overflow:auto;flex:1}
+.row{width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid var(--line)}
+.row[aria-pressed=true]{background:var(--teal-soft);box-shadow:inset 3px 0 0 var(--teal)}
+.row .top{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted)}
+.row .pv{margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:13px}
+.chip{display:inline-block;font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:99px;background:var(--teal-soft);color:var(--teal);white-space:nowrap}
+.chip.red{background:var(--red-soft);color:var(--red)}.chip.amber{background:var(--amber-soft);color:var(--amber)}.chip.green{background:var(--green-soft);color:var(--green)}.chip.grey{background:var(--code);color:var(--muted)}
+main{overflow:auto;padding:16px 20px;min-width:0}
+.empty{color:var(--muted);padding:40px 10px;text-align:center}
+h2{margin:0 0 6px;font-size:19px}
+.meta{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 12px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:14px}
+.tabs button{background:transparent;border:0;border-bottom:3px solid transparent;padding:8px 14px;color:var(--muted);font-weight:600}
+.tabs button[aria-selected=true]{color:var(--teal);border-color:var(--teal)}
+h3{margin:18px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:10px 12px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace;margin:6px 0}
+details>summary{cursor:pointer;color:var(--teal);font-weight:600}
+.msg{max-width:82%;padding:8px 12px;border-radius:14px;margin:6px 0;white-space:pre-wrap;word-break:break-word}
+.msg.user{background:var(--teal);color:#fff;margin-left:auto;border-bottom-right-radius:4px}
+.msg.assistant{background:var(--card);border:1px solid var(--line);border-bottom-left-radius:4px}
+.msg small{display:block;opacity:.7;font-size:11px;margin-bottom:2px}
+table.kv{border-collapse:collapse;font-size:13px}
+table.kv td{padding:3px 14px 3px 0;vertical-align:top}table.kv td:first-child{color:var(--muted)}
+.note{background:var(--amber-soft);border-left:4px solid var(--amber);padding:9px 12px;border-radius:8px;font-size:13px}
+.guard{border-left:4px solid var(--red);background:var(--red-soft);padding:8px 12px;border-radius:8px;margin:6px 0}
+.ok{border-left:4px solid var(--green);background:var(--green-soft);padding:8px 12px;border-radius:8px;margin:6px 0}
+.final{border:2px solid var(--teal);background:var(--teal-soft);border-radius:12px;padding:10px 14px;margin:6px 0}
+.struck{text-decoration:line-through;color:var(--muted)}
+.tok{display:flex;gap:18px;flex-wrap:wrap;margin:4px 0}.tok b{display:block;font-size:18px}
+
+/* dashboard */
+.dash{padding:12px 16px;background:var(--bg);border-bottom:1px solid var(--line);display:grid;gap:12px}
+.dash[hidden]{display:none}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:9px 12px}
+.tile b{display:block;font-size:19px;line-height:1.2;font-variant-numeric:tabular-nums}
+.tile span{color:var(--muted);font-size:12px}.tile small{color:var(--muted);font-size:11px;display:block}
+.tile.bad b{color:var(--red)}
+.panels{display:grid;grid-template-columns:2fr 1.3fr 1.1fr 1fr;gap:10px}
+@media(max-width:1100px){.panels{grid-template-columns:1fr 1fr}}@media(max-width:640px){.panels{grid-template-columns:1fr}}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:9px 12px;min-width:0}
+.panel h4{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);display:flex;justify-content:space-between}
+.panel h4 em{font-style:normal;text-transform:none;letter-spacing:0;font-weight:400}
+.bars{display:grid;gap:5px;font-size:12px}
+.bar{display:grid;grid-template-columns:96px 1fr 62px;gap:6px;align-items:center;background:transparent;border:0;padding:1px 2px;text-align:left;border-radius:6px}
+.bar:hover,.bar[aria-pressed=true]{background:var(--teal-soft)}
+.bar .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar .tr{height:10px;background:var(--code);border-radius:5px;position:relative}
+.bar .fl{position:absolute;left:0;top:0;bottom:0;border-radius:5px}
+.bar .p95{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--ink);opacity:.55}
+.bar .vl{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+svg.tl{width:100%;height:96px;display:block}
+svg.tl rect.b{cursor:pointer}svg.tl rect.b:hover{opacity:.75}
+.legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11.5px;color:var(--muted);margin-top:4px}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px}
+.k0{--c:#0b6b7a}.k1{--c:#c77d0a}.k2{--c:#6a4fb3}.k3{--c:#1d7a46}.k4{--c:#b3261e}.k5{--c:#5b6b78}
+@media (prefers-color-scheme:dark){.k0{--c:#4cc3d4}.k1{--c:#ffb454}.k2{--c:#b79cff}.k3{--c:#6fd69b}.k4{--c:#ff8a80}.k5{--c:#9bb0bd}}
+.kc{background:var(--c);fill:var(--c)}
+/* toolbar + list */
+.search{display:flex;gap:6px;align-items:center;padding:10px 10px 6px}
+.search input{flex:1;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:6px 9px;min-width:0}
+.search select{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:6px}
+.hint{padding:0 12px 6px;font-size:11.5px;color:var(--muted)}
+.hint code{background:var(--code);padding:0 4px;border-radius:4px;cursor:pointer}
+.active{display:flex;flex-wrap:wrap;gap:5px;padding:0 10px 8px}
+.active .chip{border:0;cursor:pointer}
+.active .chip::after{content:" ✕";opacity:.6}
+.count{padding:5px 12px;font-size:12px;color:var(--muted);border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--bg);display:flex;justify-content:space-between}
+.row{display:grid;grid-template-columns:3px 1fr;gap:9px;padding:8px 12px 8px 0}
+.row .strip{background:var(--c);border-radius:0 3px 3px 0}
+.row .top b{color:var(--ink)}.row .top .r{margin-left:auto;font-variant-numeric:tabular-nums}
+.row .pv{font-size:12.5px}
+mark{background:#ffe27a;color:#222;border-radius:3px;padding:0 1px}
+.lat{display:inline-block;width:46px;height:5px;background:var(--code);border-radius:3px;vertical-align:middle;position:relative}
+.lat i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--teal)}
+.lat.slow i{background:var(--amber)}
+.tools{display:flex;gap:6px;float:right}
+.tools button{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:3px 10px;font-size:12px}
+.layout{grid-template-columns:420px 1fr}
+.kbd{font-size:11px;color:var(--muted)}
+@media(max-width:860px){.layout{grid-template-columns:1fr}}
+.dash{max-height:40vh;overflow:auto;gap:8px;padding:8px 16px}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚓ Harbor model inspector</h1>
+  <span id="status"><span class="dot"></span>not connected</span>
+  <span class="sp"></span>
+  <input type="text" id="base" aria-label="Server URL" title="Harbor server that exposes /api/traces">
+  <label><input type="checkbox" id="live" checked> Live</label>
+  <label><input type="checkbox" id="follow" checked> Follow newest</label>
+  <button class="btn" id="dashtoggle" aria-expanded="true">Dashboard</button>
+  <button class="btn" id="load">Load file…</button>
+  <button class="btn" id="export">Export</button>
+  <button class="btn" id="clear">Clear</button>
+  <input type="file" id="file" accept=".jsonl,.json,.txt" hidden>
+</header>
+<section class="dash" id="dash" aria-label="Dashboard of the calls matching the current search"></section>
+<div class="layout">
+  <aside>
+    <div class="search"><input id="q" type="search" placeholder="Search…  e.g. kind:tag risk:high slow" aria-label="Search" autofocus>
+      <select id="sort" aria-label="Sort"><option value="new">Newest</option><option value="slow">Slowest</option><option value="tok">Most tokens</option></select></div>
+    <div class="hint">Filters: <code>kind:chat</code> <code>service:tagger</code> <code>risk:high</code> <code>tag:new_recipient</code> <code>error</code> <code>guardrail</code> <code>slow</code> <code>ms>2000</code> &nbsp;·&nbsp; press <b>/</b> to focus</div>
+    <div class="active" id="active"></div>
+    <div class="count"><span id="count"></span><span class="kbd">↑ ↓ to move</span></div>
+    <div id="list" role="list"></div>
+  </aside>
+  <main id="detail"><div class="empty">Waiting for model calls. Use the Harbor app and each call shows up here, with exactly what the model was sent and what it said.</div></main>
+</div>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const LS = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked */ } } };
+const KIND = { chat: 'Member chat', tag: 'Event tag', compose: 'Outbound message', retro_insight: 'Retro insight', json: 'Model call' };
+const RED = ['authority_pressure', 'secrecy_or_isolation', 'unmet_online_contact', 'growing_amounts', 'unusual_method', 'member_denies_changes', 'relative_pressure', 'credential_shared'];
+let rows = [], sel = null, tab = 'input', es = null, source = 'live';
+let base = LS.get('hi_base') || (location.protocol.startsWith('http') ? location.origin : 'http://localhost:8787');
+$('#base').value = base;
+
+const label = (k) => KIND[k] || k;
+const fmtT = (ts) => new Date(ts).toLocaleTimeString();
+function preview(r) {
+  if (r.kind === 'chat') { const m = (r.input && r.input.messages || []).filter((x) => x.role === 'user').pop(); return m ? m.content : ''; }
+  return (r.label ? r.label + ': ' : '') + String(((r.input && r.input.messages && r.input.messages[0]) || {}).content || '').slice(0, 90);
+}
+// ---- search: free text plus key:value filters ----
+let win = null;                                   // time window picked on the timeline {from,to}
+const parsedOf = (r) => (r.output && (r.output.final || r.output.parsed)) || {};
+const tokensOf = (r) => ((r.usage && r.usage.prompt_tokens) || 0) + ((r.usage && r.usage.output_tokens) || 0);
+const SLOW = 2000;
+function hay(r) { return r._hay || (r._hay = JSON.stringify(Object.assign({}, r, { input: Object.assign({}, r.input, { system: '' }) })).toLowerCase()); }
+function parseQuery(q) {
+  const f = { text: [], kv: [] };
+  for (const t of q.trim().split(/\s+/).filter(Boolean)) {
+    let m;
+    if ((m = t.match(/^(kind|service|risk|tag|model|provider|label|state|signal):(.+)$/i))) f.kv.push([m[1].toLowerCase(), m[2].toLowerCase()]);
+    else if ((m = t.match(/^(ms|tokens|tok)([<>])(\d+)$/i))) f.kv.push([m[1].toLowerCase() === 'ms' ? 'ms' : 'tok', m[2], +m[3]]);
+    else if (/^(error|errors|guardrail|guardrails|slow)$/i.test(t)) f.kv.push([t.toLowerCase().replace(/s$/, '')]);
+    else f.text.push(t.toLowerCase());
+  }
+  return f;
+}
+function matches(r, f) {
+  const p = parsedOf(r);
+  for (const kv of f.kv) {
+    const [k, v] = kv;
+    const has = (x) => String(x == null ? '' : x).toLowerCase().includes(v);
+    if (k === 'kind' && !(has(r.kind) || has(label(r.kind)))) return false;
+    if (k === 'service' && !has(r.service)) return false;
+    if (k === 'model' && !has(r.model)) return false;
+    if (k === 'provider' && !has(r.provider)) return false;
+    if (k === 'label' && !has(r.label)) return false;
+    if (k === 'risk' && !has(p.risk)) return false;
+    if (k === 'tag' && !has(p.tag)) return false;
+    if (k === 'state' && !has(p.member_state)) return false;
+    if (k === 'signal' && !(p.signals || []).some((s) => s.toLowerCase().includes(v))) return false;
+    if (k === 'error' && !r.error) return false;
+    if (k === 'guardrail' && !(r.guardrails || []).length) return false;
+    if (k === 'slow' && !((r.latencyMs || 0) >= SLOW)) return false;
+    if (k === 'ms' && !(kv[1] === '>' ? (r.latencyMs || 0) > kv[2] : (r.latencyMs || 0) < kv[2])) return false;
+    if (k === 'tok' && !(kv[1] === '>' ? tokensOf(r) > kv[2] : tokensOf(r) < kv[2])) return false;
+  }
+  if (win && !(Date.parse(r.ts) >= win.from && Date.parse(r.ts) < win.to)) return false;
+  if (f.text.length) { const h = hay(r); if (!f.text.every((t) => h.includes(t))) return false; }
+  return true;
+}
+function visible() {
+  const f = parseQuery($('#q').value), s = $('#sort').value;
+  const v = rows.filter((r) => matches(r, f));
+  if (s === 'slow') v.sort((a, b) => (b.latencyMs || 0) - (a.latencyMs || 0));
+  else if (s === 'tok') v.sort((a, b) => tokensOf(b) - tokensOf(a));
+  return v;
+}
+const kindIdx = () => { const ks = [...new Set(rows.map((r) => r.kind))].sort(); return Object.fromEntries(ks.map((k, i) => [k, i % 6])); };
+function hl(text) {                                // escape then highlight free-text terms
+  const t = parseQuery($('#q').value).text; let out = esc(text);
+  for (const w of t) if (w.length > 1) out = out.replace(new RegExp('(' + esc(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi'), '<mark>$1</mark>');
+  return out;
+}
+const pct = (a, p) => { if (!a.length) return 0; const s = a.slice().sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
+const fmtN = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(1) + 'k' : Math.round(n).toLocaleString();
+
+function addFilter(tok) {                          // click a dashboard item to toggle a filter
+  const q = $('#q'), parts = q.value.trim().split(/\s+/).filter(Boolean), i = parts.indexOf(tok);
+  if (i >= 0) parts.splice(i, 1); else { const key = tok.split(':')[0]; for (let j = parts.length - 1; j >= 0; j--) if (tok.includes(':') && parts[j].startsWith(key + ':')) parts.splice(j, 1); parts.push(tok); }
+  q.value = parts.join(' '); render();
+}
+function renderActive() {
+  const parts = $('#q').value.trim().split(/\s+/).filter(Boolean).filter((t) => /^[a-z]+:|^[a-z]+[<>]\d|^(error|guardrail|slow)s?$/i.test(t));
+  $('#active').innerHTML = parts.map((t) => `<button class="chip" data-f="${esc(t)}">${esc(t)}</button>`).join('') +
+    (win ? `<button class="chip amber" data-f="__win">${fmtT(win.from)} – ${fmtT(win.to)}</button>` : '');
+}
+
+function bars(items, opts) {                       // items: [{name, value, label, p95?, color?, filter?}]
+  const max = Math.max(1, ...items.map((i) => Math.max(i.value, i.p95 || 0)));
+  return '<div class="bars">' + (items.map((i) => `<button class="bar ${i.color || ''}" ${i.filter ? `data-f="${esc(i.filter)}"` : 'disabled'} aria-pressed="${!!i.on}" title="${esc(i.title || i.name)}">
+    <span class="nm">${esc(i.name)}</span><span class="tr"><span class="fl kc" style="width:${(i.value / max * 100).toFixed(1)}%;${i.bg ? 'background:' + i.bg : ''}"></span>${i.p95 ? `<span class="p95" style="left:${(i.p95 / max * 100).toFixed(1)}%"></span>` : ''}</span><span class="vl">${esc(i.label)}</span></button>`).join('') || '<div class="empty" style="padding:10px">no data</div>') + '</div>';
+}
+function dashboard(v) {
+  const el = $('#dash'); if (el.hidden) return;
+  const lat = v.map((r) => r.latencyMs).filter((x) => x != null), errs = v.filter((r) => r.error).length;
+  const gr = v.reduce((n, r) => n + (r.guardrails || []).length, 0), tk = v.reduce((n, r) => n + tokensOf(r), 0);
+  const tps = v.map((r) => r.usage && r.usage.tokens_per_sec).filter(Boolean);
+  const hi = v.filter((r) => parsedOf(r).risk === 'high').length;
+  const avg = lat.length ? lat.reduce((a, b) => a + b, 0) / lat.length : 0;
+  const tile = (n, l, sub, bad) => `<div class="tile ${bad ? 'bad' : ''}"><b>${n}</b><span>${l}</span>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  const ki = kindIdx();
+  // timeline: stacked by kind
+  let tl = '<div class="empty" style="padding:20px">no calls</div>', legend = '';
+  if (v.length) {
+    const ts = v.map((r) => Date.parse(r.ts)), t0 = Math.min(...ts), t1 = Math.max(...ts) + 1, N = 36, w = Math.max(1, (t1 - t0) / N);
+    const bk = Array.from({ length: N }, () => ({})); let mx = 1;
+    v.forEach((r) => { const i = Math.min(N - 1, Math.floor((Date.parse(r.ts) - t0) / w)); bk[i][r.kind] = (bk[i][r.kind] || 0) + 1; });
+    bk.forEach((b) => { mx = Math.max(mx, Object.values(b).reduce((x, y) => x + y, 0)); });
+    let svg = '';
+    bk.forEach((b, i) => {
+      let y = 84; const x = i * (100 / N);
+      for (const [k, c] of Object.entries(b)) { const h = c / mx * 80; y -= h; svg += `<rect class="b kc k${ki[k]}" x="${x + .25}%" y="${y}" width="${100 / N - .5}%" height="${h}"><title>${c} ${esc(label(k))}</title></rect>`; }
+      svg += `<rect class="b" data-from="${Math.round(t0 + i * w)}" data-to="${Math.round(t0 + (i + 1) * w)}" x="${x}%" y="0" width="${100 / N}%" height="84" fill="transparent"><title>${fmtT(t0 + i * w)} · ${Object.values(b).reduce((x, y) => x + y, 0)} calls — click to zoom</title></rect>`;
+    });
+    tl = `<svg class="tl" role="img" aria-label="Calls over time"><line x1="0" x2="100%" y1="84.5" y2="84.5" stroke="var(--line)"/>${svg}<text x="0" y="95" font-size="10" fill="var(--muted)">${fmtT(t0)}</text><text x="100%" text-anchor="end" y="95" font-size="10" fill="var(--muted)">${fmtT(t1)}</text></svg>`;
+    legend = '<div class="legend">' + Object.keys(ki).map((k) => `<span><i class="kc k${ki[k]}"></i>${esc(label(k))}</span>`).join('') + '</div>';
+  }
+  const by = (fn) => { const m = {}; v.forEach((r) => { const k = fn(r); if (k != null) (m[k] = m[k] || []).push(r); }); return m; };
+  const kinds = Object.entries(by((r) => r.kind)).map(([k, a]) => { const l = a.map((r) => r.latencyMs || 0); return { name: label(k), value: l.reduce((x, y) => x + y, 0) / l.length, p95: pct(l, .95), label: Math.round(l.reduce((x, y) => x + y, 0) / l.length) + ' ms', color: 'k' + ki[k], filter: 'kind:' + k, on: $('#q').value.includes('kind:' + k), title: `${a.length} calls · avg ${Math.round(l.reduce((x, y) => x + y, 0) / l.length)} ms · p95 ${pct(l, .95)} ms` }; }).sort((a, b) => b.value - a.value);
+  const risk = by((r) => parsedOf(r).risk), RC = { low: 'var(--green)', medium: 'var(--amber)', high: 'var(--red)' };
+  const riskItems = ['high', 'medium', 'low'].map((k) => ({ name: k, value: (risk[k] || []).length, label: String((risk[k] || []).length), bg: RC[k], filter: 'risk:' + k, on: $('#q').value.includes('risk:' + k) }));
+  const tags = Object.entries(by((r) => parsedOf(r).tag)).map(([k, a]) => ({ name: k.replace(/_/g, ' '), value: a.length, label: String(a.length), filter: 'tag:' + k, on: $('#q').value.includes('tag:' + k), color: 'k0' })).sort((a, b) => b.value - a.value).slice(0, 6);
+  const gts = {}; v.forEach((r) => (r.guardrails || []).forEach((g) => { gts[g.type] = (gts[g.type] || 0) + 1; }));
+  const gItems = Object.entries(gts).map(([k, n]) => ({ name: k, value: n, label: String(n), bg: 'var(--amber)' })).sort((a, b) => b.value - a.value);
+  const svc = Object.entries(by((r) => r.service)).map(([k, a]) => ({ name: k, value: a.length, label: String(a.length), filter: 'service:' + k, on: $('#q').value.includes('service:' + k), color: 'k5' })).sort((a, b) => b.value - a.value);
+  el.innerHTML = `<div class="tiles">
+      ${tile(v.length.toLocaleString(), 'calls shown', rows.length !== v.length ? `of ${rows.length} loaded` : '')}
+      ${tile(Math.round(avg) + ' ms', 'avg latency', `p50 ${pct(lat, .5)} · p95 ${pct(lat, .95)} ms`)}
+      ${tile(fmtN(tk), 'tokens', v.length ? `~${fmtN(tk / v.length)} per call` : '')}
+      ${tile(tps.length ? Math.round(tps.reduce((a, b) => a + b, 0) / tps.length) : '–', 'tokens / sec', 'model speed')}
+      ${tile(errs, 'errors', v.length ? (errs / v.length * 100).toFixed(1) + '% of calls' : '', errs > 0)}
+      ${tile(gr, 'guardrail hits', 'rules that rewrote output', gr > 0)}
+      ${tile(hi, 'high-risk tags', 'from event tagger', hi > 0)}
+    </div>
+    <div class="panels">
+      <div class="panel"><h4>Calls over time <em>click a bar to zoom</em></h4>${tl}${legend}</div>
+      <div class="panel"><h4>Latency by kind <em>bar = avg · tick = p95</em></h4>${bars(kinds)}</div>
+      <div class="panel"><h4>Risk &amp; tags</h4>${bars(riskItems)}<div style="height:8px"></div>${bars(tags)}</div>
+      <div class="panel"><h4>Services</h4>${bars(svc)}${gItems.length ? '<h4 style="margin-top:12px">Guardrails fired</h4>' + bars(gItems) : ''}</div>
+    </div>`;
+}
+
+function renderList() {
+  const v = visible(), ki = kindIdx();
+  const maxL = Math.max(1, ...v.map((r) => r.latencyMs || 0));
+  $('#count').textContent = v.length === rows.length ? `${rows.length} calls` : `${v.length} of ${rows.length} calls`;
+  $('#list').innerHTML = v.slice(0, 400).map((r) => {
+    const g = (r.guardrails || []).length, p = parsedOf(r), l = r.latencyMs || 0;
+    const rc = p.risk ? `<span class="chip ${p.risk === 'high' ? 'red' : p.risk === 'medium' ? 'amber' : 'green'}">${esc(p.risk)}</span>` : '';
+    return `<button class="row k${ki[r.kind]}" role="listitem" data-id="${r.id}" aria-pressed="${r.id === sel}"><span class="strip"></span><span><div class="top"><b>${esc(label(r.kind))}</b>${r.label && r.kind !== 'chat' ? `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">${esc(r.label)}</span>` : ''}${r.error ? '<span class="chip red">error</span>' : ''}${rc}${g ? `<span class="chip amber">${g} guardrail${g > 1 ? 's' : ''}</span>` : ''}<span class="r">${fmtT(r.ts)}</span></div>
+      <div class="pv">${hl(preview(r)) || '<i>(no text)</i>'}</div>
+      <div class="top" style="margin-top:3px"><span class="lat ${l >= SLOW ? 'slow' : ''}"><i style="width:${(l / maxL * 100).toFixed(0)}%"></i></span><span>${r.latencyMs ?? '?'} ms</span><span>${fmtN(tokensOf(r))} tok</span></div></span></button>`;
+  }).join('') || '<div class="empty">No calls match.</div>';
+  if (v.length > 400) $('#list').insertAdjacentHTML('beforeend', `<div class="empty">Showing the first 400. Narrow the search to see the rest.</div>`);
+}
+function bubble(m, i) { return `<div class="msg ${m.role}"><small>${m.role === 'user' ? 'member' : 'Harbor'} · message ${i + 1}</small>${esc(m.content)}</div>`; }
+function pretty(t) { try { return JSON.stringify(JSON.parse(t), null, 2); } catch { return t; } }
+function ctxTable(c) {
+  return '<table class="kv">' + Object.entries(c).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(Array.isArray(v) ? v.join(' | ') : typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`).join('') + '</table>';
+}
+function detail() {
+  const r = rows.find((x) => x.id === sel); const el = $('#detail');
+  if (!r) { el.innerHTML = '<div class="empty">Select a call on the left.</div>'; return; }
+  const u = r.usage || {}, inp = r.input || {}, out = r.output || {}, fin = out.final || {};
+  const tokens = [['prompt tokens', u.prompt_tokens], ['output tokens', u.output_tokens], ['tokens / sec', u.tokens_per_sec], ['model load ms', u.load_ms]].filter(([, v]) => v != null && v !== '');
+  let body = '';
+  if (tab === 'input') {
+    body += inp.ctx ? `<h3>Situation passed to the prompt (from Sound's systems)</h3>${ctxTable(inp.ctx)}` : '';
+    body += `<h3>${r.kind === 'chat' ? 'Conversation sent to the model' : 'User message sent to the model'}</h3>` +
+      ((inp.messages || []).map(r.kind === 'chat' ? bubble : (m) => `<pre>${esc(pretty(m.content))}</pre>`).join('') || '<div class="empty">none</div>');
+    body += `<h3>System prompt (${(inp.system || '').length.toLocaleString()} characters)</h3><details open><summary>Show / hide</summary><pre>${esc(inp.system)}</pre></details>`;
+  } else if (tab === 'think') {
+    body += '<div class="note"><b>About "thoughts".</b> This model returns no hidden chain of thought. What it does expose is what it understood (below), and every rule our code applied on top. Together they are the whole decision trail.</div>';
+    if (r.kind === 'chat') {
+      const sg = fin.signals || [], red = sg.filter((s) => RED.includes(s));
+      body += `<h3>What the model understood</h3><p>Member state: <span class="chip ${fin.member_state === 'calm' ? 'green' : 'amber'}">${esc(fin.member_state || '?')}</span></p>
+        <p>${sg.length ? sg.map((s) => `<span class="chip ${RED.includes(s) ? 'red' : 'grey'}">${esc(s)}</span>`).join(' ') : '<span class="chip grey">no risk signals</span>'}</p>
+        <h3>Handoff note it wrote for the employee</h3><pre>${esc(fin.handoff_note || '(none)')}</pre>
+        <h3>What the code does with it</h3><div class="${red.length ? 'guard' : 'ok'}">${red.length ? `Red-flag signal${red.length > 1 ? 's' : ''} present (${esc(red.join(', '))}). The app hides "This looks fine, continue" and puts a person first.` : 'No red-flag signal this turn. "Continue" appears only after the member says they verified the details or decided on their own.'}</div>`;
+    } else {
+      body += `<h3>What it decided</h3><pre>${esc(JSON.stringify(out.parsed || out.final || null, null, 2))}</pre>`;
+    }
+    const g = r.guardrails || [];
+    body += `<h3>Guardrails that touched this output</h3>` + (g.length ? g.map((x) => `<div class="guard"><b>${esc(x.type)}</b><br>${esc(x.detail || '')}${x.blocked ? `<br><span class="struck">${esc(x.blocked)}</span>` : ''}</div>`).join('') : '<div class="ok">None. The model reply passed every check unchanged.</div>');
+  } else if (tab === 'out') {
+    if (r.error) body += `<div class="guard"><b>Error</b><br>${esc(r.error)}</div>`;
+    body += `<h3>Raw model output</h3><pre>${esc(pretty(out.raw || ''))}</pre>`;
+    if (r.kind === 'chat' && fin.reply != null) {
+      const changed = out.model_reply !== fin.reply;
+      body += `<h3>What the member actually sees</h3>${changed ? `<p class="small" style="color:var(--muted)">The model said:</p><div class="final" style="border-color:var(--line);background:var(--card)"><span class="struck">${esc(out.model_reply)}</span></div><p style="color:var(--muted)">After guardrails:</p>` : ''}<div class="final">${esc(fin.reply)}</div>`;
+    } else if (out.final) body += `<h3>Parsed result</h3><pre>${esc(JSON.stringify(out.final, null, 2))}</pre>`;
+  } else {
+    body += `<pre>${esc(JSON.stringify(r, null, 2))}</pre>`;
+  }
+  el.innerHTML = `<div class="tools"><button data-copy="out">Copy output</button><button data-copy="json">Copy JSON</button></div><h2>${esc(label(r.kind))}${r.label ? ` <span class="chip grey">${esc(r.label)}</span>` : ''}</h2>
+    <div class="meta"><span class="chip">${esc(r.service)}</span><span class="chip">${esc(r.provider)} · ${esc(r.model)}</span><span class="chip grey">${fmtT(r.ts)}</span><span class="chip grey">${r.latencyMs ?? '?'} ms total</span></div>
+    ${tokens.length ? `<div class="tok">${tokens.map(([k, v]) => `<div><b>${esc(v)}</b><span style="color:var(--muted)">${k}</span></div>`).join('')}</div>` : ''}
+    <div class="tabs" role="tablist">${[['input', 'Input'], ['think', 'Thinking'], ['out', 'Output'], ['raw', 'Raw JSON']].map(([k, t]) => `<button role="tab" data-tab="${k}" aria-selected="${k === tab}">${t}</button>`).join('')}</div>${body}`;
+}
+function render() { renderActive(); const v = visible(); if (!v.some((r) => r.id === sel)) sel = v[0] ? v[0].id : null; renderList(); dashboard(v); detail(); }
+function add(r, front) {
+  if (rows.some((x) => x.id === r.id)) return;
+  front ? rows.unshift(r) : rows.push(r);
+  if (front && $('#follow').checked) sel = r.id;
+  if (!sel) sel = r.id;
+  render();
+}
+function status(on, text) { $('#status').innerHTML = `<span class="dot ${on ? 'on' : 'off'}"></span>${esc(text)}`; }
+
+async function connect() {
+  if (es) { es.close(); es = null; }
+  base = $('#base').value.replace(/\/+$/, ''); LS.set('hi_base', base); source = 'live';
+  try {
+    const j = await (await fetch(base + '/api/traces?limit=300')).json();
+    rows = j.traces.reverse(); sel = rows[0] ? rows[0].id : null; render();
+    status(true, `live · ${rows.length} calls · ${base}`);
+  } catch (e) { status(false, 'cannot reach ' + base + ' (is the server running?)'); return; }
+  if (!$('#live').checked) return;
+  es = new EventSource(base + '/api/traces/stream');
+  es.onmessage = (m) => { try { add(JSON.parse(m.data), true); } catch { /* ignore a bad line */ } };
+  es.onerror = () => status(false, 'stream interrupted, retrying…');
+  es.onopen = () => status(true, `live · ${base}`);
+}
+function loadText(text, name) {
+  if (es) { es.close(); es = null; } source = 'file';
+  rows = text.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).reverse();
+  sel = rows[0] ? rows[0].id : null; render(); status(true, `viewing file ${name} · ${rows.length} calls`);
+}
+
+$('#list').addEventListener('click', (e) => { const b = e.target.closest('.row'); if (b) { sel = b.dataset.id; $('#follow').checked = false; render(); } });
+$('#detail').addEventListener('click', (e) => { const b = e.target.closest('[data-tab]'); if (b) { tab = b.dataset.tab; detail(); } });
+$('#q').addEventListener('input', () => { LS.set('hi_q', $('#q').value); render(); }); $('#sort').addEventListener('change', render);
+$('#active').addEventListener('click', (e) => { const b = e.target.closest('[data-f]'); if (!b) return; if (b.dataset.f === '__win') { win = null; render(); } else addFilter(b.dataset.f); });
+$('#dash').addEventListener('click', (e) => {
+  const r = e.target.closest('rect[data-from]'); if (r) { win = { from: +r.dataset.from, to: +r.dataset.to }; render(); return; }
+  const b = e.target.closest('[data-f]'); if (b) addFilter(b.dataset.f);
+});
+$('#dashtoggle').addEventListener('click', () => { const d = $('#dash'); d.hidden = !d.hidden; $('#dashtoggle').setAttribute('aria-expanded', !d.hidden); LS.set('hi_dash', d.hidden ? '0' : '1'); render(); });
+if (LS.get('hi_dash') === '0') { $('#dash').hidden = true; $('#dashtoggle').setAttribute('aria-expanded', 'false'); }
+document.addEventListener('keydown', (e) => { if (e.key === '/' && document.activeElement.tagName !== 'INPUT') { e.preventDefault(); $('#q').focus(); } if (e.key === 'Escape' && document.activeElement === $('#q')) { $('#q').value = ''; win = null; render(); } });
+$('#detail').addEventListener('click', (e) => { const b = e.target.closest('[data-copy]'); if (!b) return; const r = rows.find((x) => x.id === sel); if (!r) return; const t = b.dataset.copy === 'json' ? JSON.stringify(r, null, 2) : (r.output && r.output.raw) || ''; navigator.clipboard && navigator.clipboard.writeText(t).then(() => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = b.dataset.copy === 'json' ? 'Copy JSON' : 'Copy output'; }, 1200); }); });
+$('#base').addEventListener('change', connect); $('#live').addEventListener('change', connect);
+$('#load').addEventListener('click', () => $('#file').click());
+$('#file').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) f.text().then((t) => loadText(t, f.name)); });
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) f.text().then((t) => loadText(t, f.name)); });
+$('#export').addEventListener('click', () => {
+  const blob = new Blob([rows.slice().reverse().map((r) => JSON.stringify(Object.assign({}, r, { _hay: undefined }))).join('\n') + '\n'], { type: 'application/x-ndjson' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'harbor-traces-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.jsonl'; a.click();
+});
+$('#clear').addEventListener('click', async () => {
+  if (source === 'live') { try { await fetch(base + '/api/traces/clear', { method: 'POST' }); } catch { /* server unreachable */ } }
+  rows = []; sel = null; render();
+});
+document.addEventListener('keydown', (e) => {
+  if (!['ArrowDown', 'ArrowUp'].includes(e.key) || ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+  const v = visible(), i = v.findIndex((r) => r.id === sel), n = v[i + (e.key === 'ArrowDown' ? 1 : -1)];
+  if (n) { sel = n.id; $('#follow').checked = false; render(); e.preventDefault(); }
+});
+// Deep links: inspector.html#tab=think&kind=chat&q=password&i=0&live=0
+const H = new URLSearchParams(location.hash.slice(1));
+if (H.get('tab')) tab = H.get('tab');
+if (H.get('live') === '0') $('#live').checked = false;
+$('#q').value = H.get('q') || (location.hash ? '' : LS.get('hi_q')) || '';
+if (H.get('kind')) $('#q').value = ('kind:' + H.get('kind') + ' ' + $('#q').value).trim();
+connect().then(() => {
+  if (H.has('i')) { const v = visible()[+H.get('i')]; if (v) { sel = v.id; $('#follow').checked = false; } }
+  render();
+});
+</script>
+</body>
+</html>

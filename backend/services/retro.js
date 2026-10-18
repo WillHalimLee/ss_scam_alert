@@ -43,7 +43,7 @@ const DETECTORS = [
 async function insight(d, r, facts) {                                               // LLM writes one calm paragraph; falls back to the SQL fact
   const fallback = `Looking back over your recent activity, I noticed ${facts}`;
   try {
-    const out = await llm.completeJSON(`You write ONE short, calm sentence (max 35 words) for a member follow-up from a credit union security analyst. Facts only, no accusation, never say "scam" or "fraud", no passwords or codes. Return ONLY JSON {"summary": "..."}.`, JSON.stringify({ detector: d.kind, facts }));
+    const out = await llm.completeJSON(`You write ONE short, calm sentence (max 35 words) for a member follow-up from a credit union security analyst. Facts only, no accusation, never say "scam" or "fraud", no passwords or codes. Return ONLY JSON {"summary": "..."}.`, JSON.stringify({ detector: d.kind, facts }), 'retro_insight', r.member_id);
     const s = out && String(out.summary || '').trim();
     return s && s.length < 300 && !llm.agent.BAD_REPLY.some((x) => x.test(s)) ? s : fallback;
   } catch { return fallback; }

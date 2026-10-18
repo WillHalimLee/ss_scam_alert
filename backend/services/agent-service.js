@@ -25,7 +25,7 @@ async function compose(a, name) {
   const fallback = { text: template(a, name), source: 'template' };
   try {
     const out = await llm.completeJSON(COMPOSE_SYSTEM, JSON.stringify({ first_name: name || null, source: a.source, level: a.level, takeover_suspected: !!a.ato, payment_already_completed: !!a.completed,
-      amount: a.amount || null, rail: railWord(a.rail), why: a.rules ? a.rules.map((r) => r.reason) : [a.summary] }));
+      amount: a.amount || null, rail: railWord(a.rail), why: a.rules ? a.rules.map((r) => r.reason) : [a.summary] }), 'compose', a.member_id);
     const text = out && String(out.message || '').replace(/\s+/g, ' ').trim();
     if (!text || text.length > 700 || agent.BAD_REPLY.some((r) => r.test(text)) || !/never ask/i.test(text)) return fallback;
     return { text, source: 'llm' };
@@ -104,6 +104,7 @@ async function resolve(id, outcome, status) {
 function json(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type', 'access-control-allow-methods': 'GET,POST,OPTIONS' }); res.end(JSON.stringify(obj)); }
 async function route(req, res) {
   const url = new URL(req.url, 'http://x'), p = url.pathname;
+  if (agent.trace.handle(req, res)) return;                   // model inspector endpoints
   if (req.method === 'OPTIONS') return json(res, 204, {});
   if (p === '/api/pipeline') {
     const one = async (s) => (await q(s)).rows;
