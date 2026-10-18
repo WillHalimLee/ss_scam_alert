@@ -21,18 +21,70 @@ const PLANS = { M1057: [{ rail: 'Wire', amount: 51587, label: 'Home closing wire
 
 const S = { tab: 'member', sc: 'sarah', planned: false, phone: { step: 'review' }, chat: null, cases: {}, sel: null,
   sim: { cfg: Object.assign({}, E.DEFAULTS), plannedAll: false, filter: 'all', selId: null }, unread: 0,
-  live: { mode: 'scripted', avail: false, provider: '', model: '', timeout: 9000 }, trig: { id: 'sarah' } };
+  live: { mode: 'scripted', avail: false, provider: '', model: '', timeout: 9000, backend: false }, trig: { id: 'sarah' },
+  be: { phase: 'idle', mid: null, total: 0, done: 0, trigger: null, view: null, err: '', tok: 0 } };
 const API = location.protocol === 'file:' ? 'http://localhost:8787' : '';
 const RED = ['authority_pressure', 'secrecy_or_isolation', 'unmet_online_contact', 'growing_amounts', 'unusual_method', 'member_denies_changes', 'relative_pressure', 'credential_shared'];
 const SIGNAL_LABEL = { authority_pressure: 'Someone claiming authority', secrecy_or_isolation: 'Told to keep it secret', urgency: 'Urgency', unverified_contact: 'Not independently verified',
   unmet_online_contact: 'Met online, not in person', growing_amounts: 'Growing amounts', unusual_method: 'Unusual payment method', member_verified: 'Member verified details', own_initiative: 'Member\'s own decision',
   member_denies_changes: 'Denies profile changes', member_confirms_changes: 'Confirms profile changes', wants_person: 'Wants a person', member_distressed: 'Distressed', relative_pressure: 'Pressure from someone close', credential_shared: 'Shared a password or code' };
 async function checkLive() {
-  try { const j = await (await fetch(API + '/api/status')).json(); S.live.avail = !!j.live; S.live.provider = j.provider || ''; S.live.model = j.model || ''; S.live.timeout = j.timeoutMs || 9000; }
+  try { const j = await (await fetch(API + '/api/status')).json(); S.live.avail = !!j.live; S.live.provider = j.provider || ''; S.live.model = j.model || ''; S.live.timeout = j.timeoutMs || 9000; S.live.backend = !!j.backend; }
   catch { S.live.avail = false; }
   if (!S.live.avail) S.live.mode = 'scripted';
   render();
+  if (S.live.backend) beginStory();
 }
+
+/* ---------- backend mode: the demo streams into the real pipeline (Kafka -> scorer -> Postgres -> agent) ---------- */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const post = (u, b) => fetch(API + u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) }).then((r) => { if (!r.ok) throw new Error('http ' + r.status); return r.json(); });
+const getState = (mid, ev) => fetch(API + '/api/demo/state?member=' + mid + (ev ? '&event=' + ev : '')).then((r) => r.json());
+const caseId = () => (S.live.backend && S.be.view && S.be.view.case ? S.be.view.case.case_id : null);
+const openingText = () => { const v = S.be.view; const m = v && v.messages && v.messages.find((x) => x.direction === 'out'); return m ? m.body : null; };
+function mirror(dir, text, force) {                                        // scripted chat -> the real case (stored, not delivered)
+  const cid = caseId(); if (!cid || !text || (S.chat && S.chat.live && !force)) return;
+  post('/api/cases/' + cid + '/log', { direction: dir, text, source: 'script' }).catch(() => {});
+}
+async function beginStory() {
+  if (!S.live.backend) return;
+  const sc = SCENARIOS.find((x) => x.id === S.sc), tok = S.be.tok + 1;
+  S.be = { phase: 'loading', mid: sc.mid, total: 0, done: 0, trigger: null, view: null, err: '', tok }; render();
+  try {
+    const j = await post('/api/demo/start', { member: sc.mid, planned: S.planned ? PLANS[sc.mid] : undefined });
+    if (S.be.tok !== tok) return;
+    S.be.total = j.historyTotal; S.be.trigger = j.triggerEventId;
+    for (let i = 0; i < 100; i++) {
+      const v = await getState(sc.mid); if (S.be.tok !== tok) return;
+      S.be.done = Math.min(v.processed, j.historyTotal); render();
+      if (v.processed >= j.historyTotal) break; await sleep(400);
+    }
+    S.be.phase = 'ready';
+  } catch (e) { if (S.be.tok !== tok) return; S.be.phase = 'error'; S.be.err = e.message; }
+  render();
+}
+async function sendPayment() {
+  const sc = SCENARIOS.find((x) => x.id === S.sc), tok = S.be.tok; S.phone = { step: 'sending' }; render();
+  let level = null;
+  try {
+    await post('/api/demo/send', { member: sc.mid, event: S.be.trigger });
+    for (let i = 0; i < 70; i++) {                                          // wait for the decision and, if it alerts, the opening message (the model has a few seconds)
+      await sleep(350); const v = await getState(sc.mid, S.be.trigger);
+      if (S.be.tok !== tok || S.phone.step !== 'sending') return;
+      S.be.view = v; level = v.decision && v.decision.level;
+      if (level === 'none' || (level && v.messages.some((m) => m.direction === 'out'))) break;
+    }
+  } catch (e) { S.be.err = e.message; }
+  if (!level) { level = scenarioDecision(sc).level; S.be.view = null; }     // pipeline did not answer: fall back to the local engine
+  S.be.phase = 'decided';
+  S.phone = { step: level === 'none' ? 'sent' : level === 'hold' ? 'paused' : 'chat' }; if (S.phone.step === 'chat') startChat();
+  render();
+}
+setInterval(async () => {                                                    // keep the console in step with what the pipeline stored
+  if (!S.live.backend || S.be.phase !== 'decided' || !S.be.trigger || !S.be.mid) return;
+  const tok = S.be.tok;
+  try { const v = await getState(S.be.mid, S.be.trigger); if (S.be.tok !== tok) return; const old = JSON.stringify(S.be.view); S.be.view = v; if (S.tab === 'console' && JSON.stringify(v) !== old) render(); } catch (e) { /* offline */ }
+}, 2000);
 
 /* ---------- scenario decision ---------- */
 function scenarioDecision(sc) {
@@ -179,12 +231,14 @@ function startChat() {
   S.chat = { c, msgs: [], queue: [], typing: false, draining: false, answers: [], path: [], outcome: null, startedAt: Date.now() };
   S.log.rows = [];
   if (S.live.mode === 'live' && S.live.avail) S.chat.live = { hist: [], signals: {}, state: 'calm', note: '', pending: false, trusted: false, provider: S.live.provider };
+  const open = openingText();
+  if (open) { S.chat.msgs.push({ f: 'bot', h: esc(open) }); S.chat.skipFirst = true; }   // the pipeline already composed and stored the first message
   pushNode(first);
 }
 function pushNode(id) {
   const ch = S.chat, n = node(id, ch.c);
   ch.path.push(id); ch.cur = id;
-  for (const b of n.bot) ch.queue.push(typeof b === 'string' ? { f: 'bot', h: b } : { f: 'sys', h: b.sys });
+  for (const b of n.bot) { if (ch.skipFirst && typeof b === 'string') { ch.skipFirst = false; continue; } ch.queue.push(typeof b === 'string' ? { f: 'bot', h: b } : { f: 'sys', h: b.sys }); }
   drain(ch);
 }
 /** Harbor's messages arrive one at a time: a typing indicator, then the message, then a beat before the next. */
@@ -199,7 +253,7 @@ function drain(ch) {
     const wait = calm ? 150 : 700 + Math.min(1200, ch.queue[0].h.replace(/<[^>]+>/g, '').length * 12);   // about 1-2 s per message
     setTimeout(() => {
       if (S.chat !== ch || !ch.queue.length) return;                      // member took over meanwhile
-      ch.msgs.push(ch.queue.shift()); ch.typing = false; render();
+      const nm = ch.queue.shift(); ch.msgs.push(nm); if (nm.f === 'bot') mirror('out', stripHTML(nm.h)); ch.typing = false; render();
       setTimeout(step, calm ? 0 : 650);                                         // a beat; longer than the ease-in, so it is never cut short
     }, wait);
   };
@@ -235,7 +289,9 @@ async function sendLive(text) {
   S.voice.draft = ''; ch.msgs.push({ f: 'me', h: esc(text) }); ch.answers.push({ q: 'live', a: text }); L.hist.push({ role: 'user', content: text }); L.pending = true; render();
   try {
     const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), S.live.timeout);
-    const r = await fetch(API + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ctx: liveCtx(ch.c), messages: L.hist }), signal: ctl.signal });
+    const cid = caseId();
+    const r = cid ? await fetch(API + '/api/cases/' + cid + '/reply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), signal: ctl.signal })
+      : await fetch(API + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ctx: liveCtx(ch.c), messages: L.hist }), signal: ctl.signal });
     clearTimeout(to); if (!r.ok) throw new Error('http ' + r.status);
     const j = await r.json(); if (S.chat !== ch || ch.outcome) return;
     L.hist.push({ role: 'assistant', content: j.reply }); ch.msgs.push({ f: 'bot', h: esc(j.reply) });
@@ -252,7 +308,7 @@ async function sendLive(text) {
 function liveChoose(i) {
   const ch = S.chat, L = ch.live, pick = liveChips(ch)[i]; if (!pick || L.pending) return;
   if (pick.text) return sendLive(pick.t);
-  ch.msgs.push({ f: 'me', h: esc(pick.t) }); ch.answers.push({ q: 'live-choice', a: pick.t });
+  ch.msgs.push({ f: 'me', h: esc(pick.t) }); ch.answers.push({ q: 'live-choice', a: pick.t }); mirror('in', pick.t, true);
   if (pick.back) L.trusted = false;
   else if (pick.go === 'trusted') { L.trusted = true; const n = node('trusted', ch.c); for (const b of n.bot) ch.queue.push({ f: 'bot', h: b }); drain(ch); }
   else finish(pick.end === 'ok' ? (ch.c.dec.level === 'confirm' ? 'release_light' : 'callback') : pick.end);
@@ -262,7 +318,7 @@ function choose(i) {
   if (S.chat.live) return liveChoose(i);
   const ch = S.chat, n = node(ch.cur, ch.c), pick = n.choices[i];
   ch.msgs.push({ f: 'me', h: esc(pick.t) });
-  ch.answers.push({ q: ch.cur, a: pick.t });
+  ch.answers.push({ q: ch.cur, a: pick.t }); mirror('in', pick.t);
   if (pick.back) { ch.path.pop(); pushNode(ch.path.pop() || 'start'); }
   else if (pick.go) pushNode(pick.go);
   else finish(pick.end === 'ok' ? (ch.c.dec.level === 'confirm' ? 'release_light' : 'callback') : pick.end);
@@ -279,6 +335,7 @@ function finish(key) {
   if (L) { summary.live = true; summary.signals = Object.keys(L.signals).filter((k) => L.signals[k]); summary.note = L.note; summary.state = L.state;
     summary.log.splice(summary.log.length - 1, 0, 'Harbor\'s read (' + L.provider + '): ' + (summary.signals.map((k) => SIGNAL_LABEL[k]).join(', ') || 'no risk signals') + (L.note ? '. Note: ' + L.note : '')); }
   S.cases[ch.c.sc.mid] = summary; if (!prev) S.unread++;
+  const cid = caseId(); if (cid) post('/api/cases/' + cid + '/resolve', { outcome: key }).catch(() => {});
 }
 
 /* ---------- member view ---------- */
@@ -292,8 +349,9 @@ function phoneHTML() {
       <div class="card"><h2>Review payment</h2>
       <div class="row"><span>From</span><b>Checking</b></div><div class="row"><span>To</span><b>${recip}</b></div>
       <div class="row"><span>Method</span><b>${esc(dec.rail)}</b></div><div class="row"><span>Amount</span><b>${money(dec.amt)}</b></div></div></div>
-      <div class="foot"><button class="btn block" data-act="send">Send payment</button></div>` };
+      <div class="foot"><button class="btn block" data-act="send" ${S.live.backend && S.be.phase !== 'ready' ? 'disabled' : ''}>Send payment</button>${S.live.backend ? `<div class="small muted" style="text-align:center;margin-top:6px">${S.be.phase === 'ready' ? 'Account history is in the pipeline' : S.be.phase === 'error' ? 'Pipeline error: ' + esc(S.be.err) : 'Streaming account history… ' + S.be.done + '/' + (S.be.total || '?')}</div>` : ''}</div>` };
   }
+  if (p.step === 'sending') return { html: `${bar(c.ato ? 'Sound (criminal\'s session)' : 'Sound Credit Union')}<div class="body"><div class="card"><h2>Checking this payment…</h2><p class="muted">Harbor is looking at it now. This takes a moment.</p><div class="msg bot typing" role="status" aria-label="Checking"><span></span><span></span><span></span></div></div></div>` };
   if (p.step === 'sent') return { html: `${bar('Sound Credit Union')}<div class="body"><div class="outcome green"><h2>Payment sent</h2>No friction. Harbor looked and let it through.</div></div><div class="foot"><button class="btn alt block" data-act="reset">Replay</button></div>` };
   if (p.step === 'paused') {
     const why = c.ato ? '' : `<div class="pcap">Why Harbor paused it</div><div class="pwhy">${esc(dec.rules[0] ? dec.rules[0].reason : 'Unusual activity.')} This is a safety check, not an accusation.</div>`;
@@ -306,7 +364,8 @@ function phoneHTML() {
       <div class="foot"><button class="btn block" data-act="notify">${c.ato ? 'Switch to Sarah\'s real phone' : 'Next: Harbor\'s message arrives'}</button></div>` };
   }
   if (p.step === 'lock') {
-    const text = c.ato ? 'Sound: A payment was paused on your account. Open your Sound app to review. We will never ask for your password or a code.' : 'Sound Harbor: Your payment is paused for a quick check. Nothing was sent. Open the Sound app to review.';
+    const real = openingText();
+    const text = real ? real : c.ato ? 'Sound: A payment was paused on your account. Open your Sound app to review. We will never ask for your password or a code.' : 'Sound Harbor: Your payment is paused for a quick check. Nothing was sent. Open the Sound app to review.';
     const title = c.ato ? 'A payment was paused on your account' : `Your ${money(dec.amt)} ${railWord(dec.rail)} is paused`;
     return { html: `<div class="lock"><p class="ldate">Saturday, October 17</p><div class="time" style="text-align:center">9:41</div><p class="lwho">${c.ato ? 'Sarah\'s phone (number on file before today)' : 'Your phone'}</p>
       <div class="notif"><div class="nmark" aria-hidden="true">⚓</div><div style="flex:1;min-width:0"><div class="nhead"><b>Harbor${c.ato ? ' · SMS to the old number' : ''}</b><span>now</span></div><div class="nt">${esc(title)}</div><div class="nb">${esc(text)}</div>
@@ -492,6 +551,7 @@ function memberHTML() {
         &nbsp; <label><input type="radio" name="mode" data-act="mode" value="live" ${S.live.mode === 'live' ? 'checked' : ''} ${S.live.avail ? '' : 'disabled'}> Live AI ${S.live.avail ? '<span class="chip ' + (S.live.provider === 'mock' ? 'amber' : 'green') + '">' + esc(S.live.provider === 'mock' ? 'mock test double' : S.live.provider + ' · ' + S.live.model) + '</span>' : '<span class="muted">(run <code>node harbor/server.js</code> with an API key)</span>'}</label></div>
       <div class="small" role="radiogroup" aria-label="Text size in the chat and notification" style="margin-top:8px">Text size in the chat and notification: <label><input type="radio" name="ts" data-act="tsize" value="large" ${S.textSize === 'large' ? 'checked' : ''}> Large</label>
         &nbsp; <label><input type="radio" name="ts" data-act="tsize" value="xl" ${S.textSize === 'xl' ? 'checked' : ''}> Extra large</label></div>
+      ${S.live.backend ? `<p class="small" style="margin:10px 0 0"><span class="chip ${S.be.phase === 'error' ? 'red' : 'green'}">Live pipeline</span> ${S.be.phase === 'loading' ? 'streaming ' + S.be.done + '/' + (S.be.total || '?') + ' events into Kafka…' : S.be.phase === 'error' ? esc(S.be.err) : 'events go app → Kafka → scorer → Postgres → agent'}</p>` : ''}
       <div class="actions">
         <button class="btn alt sm" data-act="reset">Restart</button>
         ${S.chat && !S.chat.outcome && S.phone.step === 'chat' ? '<button class="btn alt sm" data-act="timeout">Simulate no response (10 min)</button>' : ''}
@@ -533,7 +593,7 @@ const stageOf = (k) => STAGE[k.stage] || 1;
 function statusChip(c) { const ok = (c.key && ['cancelled', 'release_light'].includes(c.key)) || /released|cancelled/i.test(c.status); return `<span class="chip ${ok ? 'green' : 'warn'}">${esc(c.status)}</span>`; }
 function syncCase() {
   const sc = SCENARIOS.find((s) => s.id === S.sc), mid = sc.mid, p = S.phone.step, ch = S.chat;
-  if (p === 'review') { delete S.cases[mid]; return; }                         // the payment has not been sent in the demo yet: nothing is held
+  if (p === 'review' || p === 'sending') { delete S.cases[mid]; return; }                         // the payment has not been sent in the demo yet: nothing is held
   const dec = scenarioDecision(sc); if (dec.level !== 'hold') return;           // pass-throughs and light checks only get a case when their chat ends
   let k = S.cases[mid];
   if (!k) { k = S.cases[mid] = { mid, who: sc.name, tag: sc.tag, dec, status: 'Awaiting member response', answers: [], key: null, updated: 'Just now', msgs: [], stage: 'paused', log: [`Harbor paused ${money(dec.amt)} ${railWord(dec.rail)}`] }; if (S.tab !== 'console') S.unread++; }
@@ -544,6 +604,7 @@ function syncCase() {
     k.status = 'In conversation'; k.msgs = ch.msgs.filter((m) => m.f === 'bot' || m.f === 'me').map((m) => ({ f: m.f, t: stripHTML(m.h) })); k.answers = ch.answers.slice();
     if (ch.live) { k.live = true; k.signals = Object.keys(ch.live.signals).filter((x) => ch.live.signals[x]); k.note = ch.live.note; k.state = ch.live.state; }
   }
+  const v = S.live.backend && S.be.view; if (v && v.member_id === mid) { k.real = v; const o = v.messages.find((m) => m.direction === 'out'); if (o && stageOf(k) < 3) k.msgs = [{ f: 'bot', t: o.body }]; }
 }
 function stateLine(k) {
   if (k.key && OUTCOMES[k.key]) return OUTCOMES[k.key].status + '.';
@@ -578,10 +639,12 @@ function stepsFor(k) {
   const fired = d.trace ? d.trace.filter((r) => r.fired) : [];
   const checks = fired.map((r) => `<div class="chk"><b>${esc(TRIGGER[r.id] || r.id)}</b>${r.checks.map((x) => `<span class="${x.pass ? 'ok' : 'no'}"><span aria-hidden="true">${x.pass ? '✔' : '✖'}</span> ${esc(x.label)} <i>${esc(String(x.value))}</i></span>`).join('')}</div>`).join('');
   steps.push({ a: 'Rules engine', t: 'Payment started, rules checked (Decide)', s: 'done', time: fmt(d.t), b: `${money(d.amt)} ${esc(railWord(d.rail))}${d.rs === 'New' ? ' to a new recipient' : ''}. ${d.rules.length === 1 ? 'One rule' : d.rules.length + ' rules'} matched, so the result is <b>${d.level === 'hold' ? 'pause the payment' : 'a light check'}</b>.${checks}${d.suppress.length ? `<div class="small">Look-alike check: ${d.suppress.map(esc).join(' ')}</div>` : ''}` });
-  steps.push({ a: 'Pipeline', t: 'Payment held and an alert raised', s: 'done', b: 'The payment stays pending instead of completing, which buys a window of minutes. The alert is saved, then published for the agent. Each member gets one case, so a second alert joins this one instead of sending another message.' });
+  const rl = k.real, tm = rl && rl.timings;
+  steps.push({ a: 'Pipeline', t: 'Payment held and an alert raised', s: 'done', time: tm && tm.alerted ? new Date(tm.alerted).toLocaleTimeString() : '', b: (rl ? `<div class="small"><b>Real run:</b> rules decided in ${tm.decide_ms} ms · alert <code>${esc(rl.alert ? rl.alert.alert_id : '')}</code> saved to Postgres and published to Kafka.</div>` : '') + 'The payment stays pending instead of completing, which buys a window of minutes. The alert is saved, then published for the agent. Each member gets one case, so a second alert joins this one instead of sending another message.' });
+  if (rl && rl.note) steps.push({ a: 'Pipeline', t: 'AI tagger added a note (advisory)', s: 'done', b: `<span class="chip ${rl.note.risk === 'high' ? 'red' : rl.note.risk === 'medium' ? 'warn' : 'grey'}">${esc(rl.note.tag)}</span> risk ${esc(rl.note.risk)}: ${esc(rl.note.note)}<div class="small muted">${esc(rl.note.source === 'llm' ? rl.note.model : 'rule tag')} · ${rl.note.latency_ms == null ? '' : rl.note.latency_ms + ' ms · '}advisory only: it never messages a member on its own.</div>` });
   const preview = (k.msgs && k.msgs.find((m) => m.f === 'bot') ? [k.msgs.find((m) => m.f === 'bot').t] : openingLines(k).slice(0, 2)).map(esc).join('<br>');
   const way = c.ato ? 'By SMS to the phone number on file <b>before</b> the changes, never the attacker\'s session.' : 'As an app notification.';
-  steps.push(st >= 2 ? { a: 'Harbor', t: 'Check-in sent', s: 'done', b: `${way} It never asks for a password or code.<div class="quote">${preview}</div>` }
+  steps.push(st >= 2 ? { a: 'Harbor', t: 'Check-in sent', s: 'done', b: `${way} It never asks for a password or code.<div class="quote">${preview}</div>${tm && tm.compose_source ? `<div class="small muted">Written by ${tm.compose_source === 'llm' ? esc(tm.compose_model || 'the model') : 'the safe template (model too slow)'} in ${tm.compose_ms} ms${tm.delivered ? ', delivered ' + new Date(tm.delivered).toLocaleTimeString() : ''}.</div>` : ''}` }
     : { a: 'Harbor', t: 'Check-in about to be sent', s: 'wait', b: `Next, Harbor messages the member. ${way}<div class="quote">${preview}</div>` });
   const mine = (k.msgs || []).filter((m) => m.f === 'me');
   if (st < 2) steps.push({ a: 'Member', t: 'Not contacted yet', s: 'todo', b: 'Waiting for the check-in to go out.' });
@@ -855,7 +918,7 @@ function archSVG() {
     ${['An alert never waits on an LLM.', 'Key = member_id: one member, one ordered', '   partition, so stateful rules stay correct.', 'At-least-once delivery + idempotent keys', '   (event_id, alert_id): replays are safe.', 'LLMs are advisory. They write notes and', '   messages; rules and code decide actions.', 'Every failure lands in the DLQ with a redrive.'].map((l, i) => T(34, 532 + i * 20, l)).join('')}</g>
   </svg>`;
 }
-const BACKEND = 'http://localhost:8790';
+const BACKEND = location.protocol === 'file:' ? 'http://localhost:8787' : '';
 S.pipe = { data: null, cases: [], sel: null, detail: null, err: null, draft: '', busy: false, timer: null };
 async function pipeFetch() {
   try {
@@ -937,7 +1000,7 @@ function render() {
   if (S.ui.demoOpen && !S.ui.popFocused) { S.ui.popFocused = true; const x = document.querySelector('.pop-x'); if (x) x.focus(); }
   if (!S.ui.demoOpen) S.ui.popFocused = false;
 }
-function reset() { stopVoice(); S.voice.draft = ''; S.voice.err = null; S.phone = { step: 'review' }; S.chat = null; S.log.rows = []; }
+function reset() { stopVoice(); S.voice.draft = ''; S.voice.err = null; S.phone = { step: 'review' }; S.chat = null; S.log.rows = []; S.be.view = null; if (S.live.backend) setTimeout(beginStory, 0); }
 document.addEventListener('click', (ev) => {
   if (S.ui.demoOpen && !ev.target.closest('.pop, .demo-btn')) { S.ui.demoOpen = false; render(); }
   if (S.ui.qOpen && !ev.target.closest('.qfield')) { S.ui.qOpen = false; render(); }
@@ -955,11 +1018,13 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.tab) { S.tab = t.dataset.tab; if (S.tab === 'console') S.unread = 0; if (S.tab === 'pipe') pipeStart(); return render(); }
   const a = t.dataset.act;
   if (a === 'scn') { S.sc = t.dataset.id; S.sel = SCENARIOS.find((x) => x.id === t.dataset.id).mid; S.ui.demoOpen = false; reset(); }
+  else if (a === 'send' && S.live.backend && S.be.phase === 'ready') { sendPayment(); return; }
+  else if (a === 'send' && S.live.backend) return;
   else if (a === 'send') { const d = scenarioDecision(SCENARIOS.find((s) => s.id === S.sc)); S.phone = { step: d.level === 'none' ? 'sent' : d.level === 'hold' ? 'paused' : 'chat' }; if (S.phone.step === 'chat') startChat(); }
   else if (a === 'notify') S.phone = { step: 'lock' };
   else if (a === 'open') { S.phone = { step: 'chat' }; startChat(); }
   else if (a === 'choose') choose(+t.dataset.i);
-  else if (a === 'person') { S.chat.msgs.push({ f: 'me', h: 'Talk to a person' }); S.chat.answers.push({ q: 'person', a: 'Talk to a person' }); finish('human'); }
+  else if (a === 'person') { mirror('in', 'Talk to a person', true); S.chat.msgs.push({ f: 'me', h: 'Talk to a person' }); S.chat.answers.push({ q: 'person', a: 'Talk to a person' }); finish('human'); }
   else if (a === 'timeout') finish('timeout');
   else if (a === 'mic') { S.voice.on ? stopVoice(true) : startVoice(); return; }
   else if (a === 'demo') S.ui.demoOpen = !S.ui.demoOpen;
@@ -971,7 +1036,7 @@ document.addEventListener('click', (ev) => {
   else if (a === 'rawt') S.ui.raw[t.dataset.id] = !S.ui.raw[t.dataset.id];
   else if (a === 'reset') { S.ui.demoOpen = false; reset(); }
   else if (a === 'case') S.sel = t.dataset.id;
-  else if (a === 'cact') { const k = S.cases[S.sel]; k.log.push(t.dataset.v); k.status = t.dataset.v.split(';')[0]; k.updated = 'Just now'; }
+  else if (a === 'cact') { const k = S.cases[S.sel]; if (S.sel === S.be.mid && caseId()) post('/api/cases/' + caseId() + '/action', { text: t.dataset.v }).catch(() => {}); k.log.push(t.dataset.v); k.status = t.dataset.v.split(';')[0]; k.updated = 'Just now'; }
   else if (a === 'sim') S.sim.selId = t.dataset.id;
   else if (a === 'pcase') { S.pipe.sel = t.dataset.id; pipeFetch(); }
   else if (a === 'preply') { pipeReply(); return; }

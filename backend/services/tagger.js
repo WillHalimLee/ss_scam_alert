@@ -18,7 +18,7 @@ function ruleTag(e, d) {                                    // deterministic fal
 (async () => {
   await K.ensureTopics();
   const prod = await K.producer();
-  const handler = async ({ event: e, decision }) => {
+  const handler = async ({ event: e, decision, history }) => {
     const t0 = Date.now();
     const recent = (await pool.query(`select to_char(ts,'Mon DD HH24:MI') t, type, rail, amount, recipient_status rs, ratio from events
       where member_id=$1 and ts<=$2 and type in ('Password Reset','Email Change','Phone Change','Address Change','Recipient Added','Payment Initiated','Branch Visit','Contact Center Call') and event_id<>$3
@@ -27,7 +27,8 @@ function ruleTag(e, d) {                                    // deterministic fal
 Rules engine decision: ${decision ? decision.level + (decision.rules.length ? ' (' + decision.rules.join('+') + ')' : '') : 'n/a (not a payment)'}.
 Earlier key events: ${recent.map((r) => `${r.t} ${r.type}${r.rail && r.rail !== 'Not Applicable' ? ' ' + r.rail : ''}${r.amount > 0 ? ' $' + Math.round(r.amount) : ''}${r.rs === 'New' ? ' new-recipient' : ''}`).join('; ') || 'none'}`;
     let out = null, source = 'llm', model = (llm.provider() || {}).model || null;
-    try { out = await llm.completeJSON(SYSTEM, user, 'tag', e.member_id + ' ' + e.type); } catch (err) { console.error('[tagger] llm failed, using rule tag:', err.message); }
+    // Replayed account history is background: rule tags only, so the model stays free for the live moment.
+    try { if (!history) out = await llm.completeJSON(SYSTEM, user, 'tag', e.member_id + ' ' + e.type); } catch (err) { console.error('[tagger] llm failed, using rule tag:', err.message); }
     if (!out || !TAGS.includes(out.tag) || !['low', 'medium', 'high'].includes(out.risk)) { out = ruleTag(e, decision); source = 'rule'; model = null; }
     const alerted = !!(decision && decision.level !== 'none');
     const disagrees = !!((alerted && out.risk === 'low') || (!alerted && decision && out.risk === 'high'));

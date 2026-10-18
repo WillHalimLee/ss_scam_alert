@@ -8,12 +8,12 @@ tasks:
       - task --list
 
   run:
-    desc: Start everything (Docker, backend, demo events, chat server) and open the app. Ctrl+C stops it.
+    desc: Start everything (Docker, Kafka, Postgres, scorer, tagger, API + app on :8787) and open it. Ctrl+C stops it.
     cmds:
       - bash scripts/run.sh
 
   chat:
-    desc: Chat server only (no Docker). Uses local Ollama unless HARBOR_PROVIDER is set.
+    desc: Chat-only server, no Docker or pipeline (the app falls back to local mode). Uses local Ollama unless HARBOR_PROVIDER is set.
     cmds:
       - HARBOR_PROVIDER="${HARBOR_PROVIDER:-ollama}" HARBOR_MODEL="${HARBOR_MODEL:-qwen2.5:14b}" node harbor/server.js
 

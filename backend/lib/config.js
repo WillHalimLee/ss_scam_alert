@@ -5,5 +5,6 @@ module.exports = {
   partitions: 6,                                   // member_id is the key, so one member's events stay ordered
   caseTimeoutSec: +process.env.CASE_TIMEOUT_SEC || 600,
   maxMessagesPer24h: +process.env.MAX_MSGS_24H || 3,
-  agentPort: +process.env.AGENT_PORT || 8790,
+  agentPort: +process.env.AGENT_PORT || 8787,                // the one port: app + API
+  composeTimeoutMs: +process.env.COMPOSE_TIMEOUT_MS || 9000,
 };

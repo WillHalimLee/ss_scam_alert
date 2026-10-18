@@ -42,7 +42,7 @@ flowchart LR
 
 | Topic | Key | Producer | Consumer group |
 |---|---|---|---|
-| `events.raw` | member_id | replayer / real sources | `harbor-scorer` |
+| `events.raw` | member_id | demo UI (`/api/demo/*`), replayer, real sources | `harbor-scorer` |
 | `events.scored` | member_id | scorer (key events only) | `harbor-tagger` |
 | `alerts.risk` | member_id | scorer, retro | `harbor-agent` |
 | `notifications.out` | member_id | agent | `harbor-delivery` |
@@ -56,6 +56,7 @@ npm install
 npm run up            # Redpanda (Kafka API, :19092) + Postgres (:5439); schema from init.sql
 npm run seed
 ./scripts/start-all.sh                       # scorer, tagger, agent service (HARBOR_PROVIDER=ollama by default)
+# bulk load (optional; the demo UI streams one member at a time via the API):
 node services/replayer.js --members M1003,M1001,M1039,M1057,M1002,M1004 --rate 60
 node services/retro.js --once --as-of 2026-10-05T00:00:00Z
 ./scripts/stop-all.sh && npm run down

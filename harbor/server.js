@@ -28,7 +28,8 @@ http.createServer(async (req, res) => {
   }
   const f = path.join(__dirname, req.url === '/' ? 'index.html' : decodeURIComponent(req.url.split('?')[0]));
   if (!f.startsWith(__dirname) || /agent\.js$|server\.js$|trace\.js$|\.traces/.test(f) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); return res.end('not found'); }
-  res.writeHead(200, { 'content-type': TYPES[path.extname(f)] || 'application/octet-stream', 'cache-control': 'no-cache' });   // dev server: always revalidate so edits show up fs.createReadStream(f).pipe(res);
+  res.writeHead(200, { 'content-type': TYPES[path.extname(f)] || 'application/octet-stream', 'cache-control': 'no-cache' });   // dev server: always revalidate so edits show up
+  fs.createReadStream(f).pipe(res);
 }).listen(PORT, () => {
   const p = agent.provider();
   console.log(`Harbor on http://localhost:${PORT}  |  agent: ${p ? p.name + ' (' + p.model + ')' : 'NO PROVIDER (set a key, or HARBOR_PROVIDER=mock); app falls back to the guided script'}`);

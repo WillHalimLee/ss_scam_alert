@@ -1,6 +1,6 @@
 // FAST PATH. events.raw -> rules engine (deterministic, no LLM) -> Postgres + alerts.risk.
 // No model call sits between an event and an alert decision: it must be fast, repeatable and explainable.
-const cfg = require('../lib/config'), { pool } = require('../lib/db'), K = require('../lib/kafka'), ev = require('../lib/events');
+const cfg = require('../lib/config'), { pool, ensureSchema } = require('../lib/db'), K = require('../lib/kafka'), ev = require('../lib/events');
 const engine = require('../../harbor/engine.js');
 
 const stateCache = new Map();
@@ -12,6 +12,7 @@ async function loadState(memberId) {
 }
 
 (async () => {
+  await ensureSchema();
   await K.ensureTopics();
   const prod = await K.producer();
   let processed = 0;
@@ -27,17 +28,23 @@ async function loadState(memberId) {
   }, 5000);
 
   const handler = async (e) => {
+    if (e.type === '__reset') {                                                  // in-band control message from the demo: start this member over
+      const fresh = engine.createState(); fresh.plan = e.planned || null; stateCache.set(e.member_id, fresh);
+      await pool.query('insert into member_state (member_id, state) values ($1,$2) on conflict (member_id) do update set state=$2, updated_at=now()', [e.member_id, fresh]);
+      return;
+    }
     const t0 = Date.now(), st = await loadState(e.member_id), client = await pool.connect();
     let alert = null, decision = null;
     try {
       await client.query('begin');
       const ins = await client.query(`insert into events (${ev.EVENT_COLS.join(',')}) values (${ev.EVENT_COLS.map((_, i) => '$' + (i + 1)).join(',')}) on conflict (event_id) do nothing`, ev.eventRow(e));
       if (!ins.rowCount) { await client.query('rollback'); return; }                // duplicate delivery: already handled
-      decision = engine.step(st, e, {});                                           // mutates st
+      decision = engine.step(st, e, { planned: st.plan || undefined });            // mutates st
       await client.query('insert into member_state (member_id, state) values ($1,$2) on conflict (member_id) do update set state=$2, updated_at=now()', [e.member_id, st]);
       if (decision) {
-        await client.query('insert into decisions (event_id, member_id, level, rules, suppress, armed, latency_ms) values ($1,$2,$3,$4,$5,$6,$7)',
-          [e.id, e.member_id, decision.level, JSON.stringify(decision.rules.map((r) => ({ id: r.id, label: r.label, reason: r.reason }))), JSON.stringify(decision.suppress), decision.armed, Date.now() - t0]);
+        await client.query('insert into decisions (event_id, member_id, level, rules, suppress, armed, latency_ms, detail) values ($1,$2,$3,$4,$5,$6,$7,$8)',
+          [e.id, e.member_id, decision.level, JSON.stringify(decision.rules.map((r) => ({ id: r.id, label: r.label, reason: r.reason }))), JSON.stringify(decision.suppress), decision.armed, Date.now() - t0,
+           JSON.stringify({ trace: decision.trace, armedAt: decision.armedAt, resetAt: decision.resetAt, realMover: decision.realMover })]);
         if (decision.level !== 'none') {
           alert = { alert_id: e.id, member_id: e.member_id,
             payload: { schema: 1, alert_id: e.id, member_id: e.member_id, source: 'rules', level: decision.level, event_id: e.id, payment_id: e.pid || null, ts: e.ts,
@@ -53,7 +60,7 @@ async function loadState(memberId) {
 
     if (alert) await publishAlert(alert);
     // Only meaningful events go to the slow, LLM-based tagger. Routine card swipes and logins do not.
-    if (ev.isKeyEvent(e)) await K.send(prod, cfg.topics.scored, e.member_id, { schema: 1, event: e, decision: decision ? { level: decision.level, rules: decision.rules.map((r) => r.id) } : null });
+    if (ev.isKeyEvent(e)) await K.send(prod, cfg.topics.scored, e.member_id, { schema: 1, history: !!e.h, event: e, decision: decision ? { level: decision.level, rules: decision.rules.map((r) => r.id) } : null });
     if (++processed % 500 === 0) console.log(`[scorer] ${processed} events`);
     if (alert) console.log(`[scorer] ALERT ${alert.payload.level.toUpperCase()} ${e.member_id} ${alert.payload.rules.map((r) => r.id).join('+')} $${Math.round(e.amt)} in ${alert.payload.decided_ms}ms`);
   };

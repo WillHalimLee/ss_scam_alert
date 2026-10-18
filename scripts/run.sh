@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Starts the whole Harbor demo: Docker infra, backend services, demo events, retro job, chat server, browser.
+# Starts the whole Harbor demo: Docker infra, scorer + tagger, then the API server that also serves the app.
+# Nothing is replayed up front: choosing a story in the app streams that member's events into Kafka live.
 # Ctrl+C stops everything this script started (Docker is left running; use `task down` to stop it).
-#   DEMO_MEMBERS=M1003,M1001   members to replay (default below)
 #   OPEN=false                 don't open the browser
 #   RESET=false                keep earlier data instead of starting clean
 #   HARBOR_PROVIDER=ollama|anthropic|openai|none   force an AI provider (default: auto-detect)
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 LOGS="$ROOT/backend/.logs"; mkdir -p "$LOGS"
-MEMBERS="${DEMO_MEMBERS:-M1003,M1001,M1039,M1057,M1002,M1004,M1010,M1018}"
 RESET="${RESET:-true}"
 MODEL="${HARBOR_MODEL:-qwen2.5:14b}"
 CHAT_PORT="${PORT:-8787}"
@@ -80,16 +79,12 @@ say "5/7 Data"
 if [ "$RESET" = true ]; then (cd backend && node scripts/reset.js 2>&1 | grep -E "^reset|rror" ); else ok "keeping earlier data (RESET=false)"; fi
 (cd backend && node scripts/seed.js 2>&1 | grep -v -E "Timeout|trace-warnings")
 
-say "6/7 Backend services"
-(cd backend && CASE_TIMEOUT_SEC="${CASE_TIMEOUT_SEC:-600}" ./scripts/start-all.sh) | sed 's/^/  /'
-for i in $(seq 1 40); do curl -s -m 2 localhost:8790/api/pipeline >/dev/null 2>&1 && break; sleep 1; done
-curl -s -m 2 localhost:8790/api/pipeline >/dev/null 2>&1 && ok "agent API on :8790" || warn "agent API not answering yet (see backend/.logs/agent-service.log)"
-(cd backend && node services/replayer.js --members "$MEMBERS" --rate 60 2>&1 | grep -E "done|rror")
-# Retro job: runs once shortly after the replay. "Now" is set to Oct 5 so it can see the slow-ramp pattern.
-( sleep 35; cd backend && node services/retro.js --once --as-of 2026-10-05T00:00:00Z >>"$LOGS/retro.log" 2>&1 ) & BG_PIDS+=($!)
+say "6/7 Pipeline workers"
+(cd backend && CASE_TIMEOUT_SEC="${CASE_TIMEOUT_SEC:-600}" ./scripts/start-all.sh scorer tagger) | sed 's/^/  /'
+ok "scorer and tagger are consuming events.raw (Kafka)"
 
-say "7/7 Chat server"
+say "7/7 API server and app"
 URL="http://localhost:$CHAT_PORT"
-printf '\n  \033[1mHarbor is running\033[0m\n    App:            %s\n    Pipeline tab:   live (events and cases appear over the next ~30 s)\n    Model inspector: %s/inspector.html  (what the model sees and says)\n    Logs:           backend/.logs/\n    Stop:           Ctrl+C\n\n' "$URL" "$URL"
-[ "${OPEN:-true}" = true ] && ( sleep 2; command -v open >/dev/null 2>&1 && open "$URL" ) & BG_PIDS+=($!)
-PORT="$CHAT_PORT" node harbor/server.js
+printf '\n  \033[1mHarbor is running\033[0m\n    App + API:       %s   (pick a story, then Send payment: events stream through Kafka live)\n    Model inspector: %s/inspector.html  (what the model sees and says)\n    Logs:            backend/.logs/\n    Stop:            Ctrl+C\n\n' "$URL" "$URL"
+[ "${OPEN:-true}" = true ] && ( sleep 3; command -v open >/dev/null 2>&1 && open "$URL" ) & BG_PIDS+=($!)
+cd backend && AGENT_PORT="$CHAT_PORT" CASE_TIMEOUT_SEC="${CASE_TIMEOUT_SEC:-600}" node services/agent-service.js

@@ -1,9 +1,10 @@
-// Notification + conversation agent.
+// API server + notification agent. One process serves the app on http://localhost:8787 and runs the agent.
 //   alerts.risk -> case management (merge, rate-limit) -> personalized message -> notifications.out -> delivery adapter
-//   HTTP API: conversation with the member (reuses the Harbor chat agent), case timeline, pipeline stats.
+//   HTTP: static front end, /api/demo/* (stream a demo story into Kafka), /api/console + /api/cases/* (real cases),
+//         /api/chat (direct model chat), /api/traces (model inspector), /api/pipeline (stats).
 //   Timer: no reply by due_at -> escalate to a human.
-const http = require('http'), crypto = require('crypto');
-const cfg = require('../lib/config'), { pool, q } = require('../lib/db'), K = require('../lib/kafka'), llm = require('../lib/llm');
+const http = require('http'), crypto = require('crypto'), fs = require('fs'), path = require('path');
+const cfg = require('../lib/config'), { pool, q, ensureSchema } = require('../lib/db'), K = require('../lib/kafka'), llm = require('../lib/llm'), demo = require('../lib/demo');
 const agent = llm.agent;
 
 const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
@@ -22,21 +23,22 @@ function template(a, name) {
 const COMPOSE_SYSTEM = `You write the FIRST outbound message from Harbor, a personal security analyst at Sound Credit Union, to a member about their account. 2-3 short sentences, plain language, warm and calm. Return ONLY JSON {"message": "..."}.
 Rules: say what happened in plain words; if a payment is paused say nothing has been sent and the member is in control; never say "scam", "fraud" or "criminal"; never ask for passwords, PINs or codes; do not promise safety or recovery; do not include links; end by inviting them to open the Sound app (or reply) and include that Sound never asks for a password or code or to move money. Use the member's first name only if given.`;
 async function compose(a, name) {
-  const fallback = { text: template(a, name), source: 'template' };
+  const t0 = Date.now(), fallback = { text: template(a, name), source: 'template', ms: 0 };
   try {
-    const out = await llm.completeJSON(COMPOSE_SYSTEM, JSON.stringify({ first_name: name || null, source: a.source, level: a.level, takeover_suspected: !!a.ato, payment_already_completed: !!a.completed,
-      amount: a.amount || null, rail: railWord(a.rail), why: a.rules ? a.rules.map((r) => r.reason) : [a.summary] }), 'compose', a.member_id);
+    const out = await Promise.race([llm.completeJSON(COMPOSE_SYSTEM, JSON.stringify({ first_name: name || null, source: a.source, level: a.level, takeover_suspected: !!a.ato, payment_already_completed: !!a.completed,
+      amount: a.amount || null, rail: railWord(a.rail), why: a.rules ? a.rules.map((r) => r.reason) : [a.summary] }), 'compose', a.member_id),
+      new Promise((_, no) => setTimeout(() => no(new Error('compose timeout')), cfg.composeTimeoutMs))]);          // a slow model must not hold the member up: fall back to the template
     const text = out && String(out.message || '').replace(/\s+/g, ' ').trim();
-    if (!text || text.length > 700 || agent.BAD_REPLY.some((r) => r.test(text)) || !/never ask/i.test(text)) return fallback;
-    return { text, source: 'llm' };
-  } catch (e) { return fallback; }
+    if (!text || text.length > 700 || agent.BAD_REPLY.some((r) => r.test(text)) || !/never ask/i.test(text)) return Object.assign(fallback, { ms: Date.now() - t0 });
+    return { text, source: 'llm', ms: Date.now() - t0, model: (llm.provider() || {}).model };
+  } catch (e) { return Object.assign(fallback, { ms: Date.now() - t0 }); }
 }
 
 /* ---------- alert handling ---------- */
 let prod;
-async function say(caseId, direction, body, source, channel, memberId) {
-  const r = await q('insert into messages (case_id, direction, body, source) values ($1,$2,$3,$4) returning id', [caseId, direction, body, source]);
-  if (direction === 'out') await K.send(prod, cfg.topics.out, memberId, { message_id: r.rows[0].id, case_id: caseId, member_id: memberId, channel, body });
+async function say(caseId, direction, body, source, channel, memberId, meta, deliver = true) {
+  const r = await q('insert into messages (case_id, direction, body, source, meta) values ($1,$2,$3,$4,$5) returning id', [caseId, direction, body, source, meta ? JSON.stringify(meta) : null]);
+  if (direction === 'out' && deliver) await K.send(prod, cfg.topics.out, memberId, { message_id: r.rows[0].id, case_id: caseId, member_id: memberId, channel, body });
   return r.rows[0].id;
 }
 function ctxFrom(a) {
@@ -71,7 +73,7 @@ async function onAlert(a) {
   await q(`insert into cases (case_id, member_id, status, channel, ato, ctx, due_at) values ($1,$2,'awaiting_member',$3,$4,$5, now() + ($6 || ' seconds')::interval)`,
     [caseId, a.member_id, channel, !!a.ato, JSON.stringify(ctx), String(cfg.caseTimeoutSec)]);
   await q('insert into case_alerts (case_id, alert_id) values ($1,$2)', [caseId, a.alert_id]);
-  await say(caseId, 'out', msg.text, msg.source, channel, a.member_id);
+  await say(caseId, 'out', msg.text, msg.source, channel, a.member_id, { ms: msg.ms, model: msg.model || null });
   console.log(`[agent] case ${caseId} ${a.member_id} via ${channel} (${msg.source}): ${msg.text.slice(0, 90)}...`);
 }
 
@@ -101,11 +103,68 @@ async function resolve(id, outcome, status) {
 }
 
 /* ---------- http ---------- */
+/* ---------- demo: stream a story into the pipeline, read back what it decided ---------- */
+const readBody = (req) => new Promise((ok) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 20000) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(b || '{}')); } catch { ok({}); } }); });
+const iso = (d) => (d ? new Date(d).toISOString() : null);
+async function demoStart(mid, planned) {
+  if (!demo.known(mid)) throw Object.assign(new Error('unknown member'), { code: 404 });
+  const t = demo.triggerFor(mid, planned); if (!t) throw Object.assign(new Error('no trigger payment for this story'), { code: 422 });
+  const cs = (await q('select case_id from cases where member_id=$1', [mid])).rows.map((r) => r.case_id);
+  if (cs.length) { await q('delete from messages where case_id = any($1)', [cs]); await q('delete from case_alerts where case_id = any($1)', [cs]); await q('delete from cases where case_id = any($1)', [cs]); }
+  for (const tb of ['decisions', 'alerts', 'event_notes', 'review_queue', 'retro_findings', 'member_state', 'events']) await q(`delete from ${tb} where member_id=$1`, [mid]);
+  await K.send(prod, cfg.topics.raw, mid, { schema: 1, type: '__reset', member_id: mid, planned: planned || null, ts: new Date().toISOString() });
+  const hist = demo.historyOf(mid, t);
+  for (let i = 0; i < hist.length; i += 200) await Promise.all(hist.slice(i, i + 200).map((e) => K.send(prod, cfg.topics.raw, mid, e)));
+  return { triggerEventId: t.eventId, historyTotal: hist.length, trigger: { amount: t.event.amt, rail: t.event.rail, recipient: t.event.rs } };
+}
+async function demoSend(mid, eventId) {
+  const t = demo.triggerFor(mid, undefined), env = demo.envelopeById(mid, eventId || (t && t.eventId));
+  if (!env) throw Object.assign(new Error('no such event'), { code: 404 });
+  await K.send(prod, cfg.topics.raw, mid, env); return { sent: env.id, at: Date.now() };
+}
+/** Everything the pipeline did for one payment (or for a member's latest case), shaped for the UI. */
+async function view(mid, eventId) {
+  const one = async (sql, a) => (await q(sql, a)).rows[0] || null;
+  const processed = (await one('select count(*)::int n from events where member_id=$1', [mid])).n;
+  let c = null, ald = null;
+  if (eventId) { ald = await one('select * from alerts where event_id=$1', [eventId]); if (ald) c = await one('select c.* from cases c join case_alerts ca on ca.case_id=c.case_id where ca.alert_id=$1 limit 1', [ald.alert_id]); }
+  else { c = await one('select * from cases where member_id=$1 order by opened_at desc limit 1', [mid]); if (c) ald = await one('select a.* from alerts a join case_alerts ca on ca.alert_id=a.alert_id where ca.case_id=$1 order by a.created_at limit 1', [c.case_id]); }
+  const evId = eventId || (ald && ald.event_id);
+  const event = evId ? await one('select * from events where event_id=$1', [evId]) : null;
+  const decision = evId ? await one('select * from decisions where event_id=$1', [evId]) : null;
+  const note = evId ? await one('select tag, risk, note, source, model, latency_ms, disagrees from event_notes where event_id=$1', [evId]) : null;
+  const messages = c ? (await q('select id, direction, body, source, meta, delivered_at, created_at from messages where case_id=$1 order by id', [c.case_id])).rows : [];
+  const member = await one('select first_name from members where member_id=$1', [mid]);
+  const out = messages.find((m) => m.direction === 'out');
+  return { member_id: mid, first_name: member && member.first_name, processed, event, decision, alert: ald && { alert_id: ald.alert_id, level: ald.level, kind: ald.kind, payload: ald.payload, published: ald.published },
+    note, case: c, messages,
+    timings: { ingested: iso(event && event.ingested_at), decided: iso(decision && decision.decided_at), decide_ms: decision && decision.latency_ms, alerted: iso(ald && ald.created_at),
+      composed: iso(out && out.created_at), delivered: iso(out && out.delivered_at), compose_ms: out && out.meta && out.meta.ms, compose_model: out && out.meta && out.meta.model, compose_source: out && out.source } };
+}
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
+const WEB = path.join(__dirname, '..', '..', 'harbor');
+function serveStatic(req, res, p) {
+  const f = path.join(WEB, p === '/' ? 'index.html' : decodeURIComponent(p));
+  if (!f.startsWith(WEB) || /(agent|server|trace)\.js$|\.traces/.test(f) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); return res.end('not found'); }
+  res.writeHead(200, { 'content-type': TYPES[path.extname(f)] || 'application/octet-stream', 'cache-control': 'no-cache' });
+  fs.createReadStream(f).pipe(res);
+}
+
 function json(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type', 'access-control-allow-methods': 'GET,POST,OPTIONS' }); res.end(JSON.stringify(obj)); }
 async function route(req, res) {
   const url = new URL(req.url, 'http://x'), p = url.pathname;
   if (agent.trace.handle(req, res)) return;                   // model inspector endpoints
   if (req.method === 'OPTIONS') return json(res, 204, {});
+  if (p === '/api/status') { const pr = llm.provider(); return json(res, 200, { backend: true, live: !!pr, provider: pr && pr.name, model: pr && pr.model, timeoutMs: pr && pr.timeoutMs }); }
+  if (p === '/api/chat' && req.method === 'POST') { try { return json(res, 200, await agent.chat(await readBody(req))); } catch (e) { console.error('chat error:', e.message); return json(res, 502, { error: 'agent unavailable' }); } }
+  if (p === '/api/demo/start' && req.method === 'POST') { const b = await readBody(req); return json(res, 200, await demoStart(String(b.member || ''), b.planned)); }
+  if (p === '/api/demo/send' && req.method === 'POST') { const b = await readBody(req); return json(res, 200, await demoSend(String(b.member || ''), b.event)); }
+  if (p === '/api/demo/state') return json(res, 200, await view(url.searchParams.get('member') || '', url.searchParams.get('event') || null));
+  if (p === '/api/console') {
+    const ids = (await q('select distinct on (member_id) member_id from cases order by member_id, opened_at desc')).rows.map((r) => r.member_id);
+    const views = await Promise.all(ids.map((m) => view(m))); views.sort((a, b) => String(b.case.opened_at).localeCompare(String(a.case.opened_at)));
+    return json(res, 200, views);
+  }
   if (p === '/api/pipeline') {
     const one = async (s) => (await q(s)).rows;
     const [events, decisions, alerts, cases, notes, review, retro, latency] = await Promise.all([
@@ -120,19 +179,28 @@ async function route(req, res) {
   let m = p.match(/^\/api\/cases\/([\w-]+)$/); if (m) { const d = await caseDetail(m[1]); return d ? json(res, 200, d) : json(res, 404, { error: 'not found' }); }
   if (p === '/api/review') return json(res, 200, (await q(`select r.id, r.event_id, r.member_id, r.reason, r.status, r.created_at, n.tag, n.risk from review_queue r left join event_notes n on n.event_id=r.event_id order by r.id desc limit 40`)).rows);
   if (p === '/api/retro') return json(res, 200, (await q('select finding_key, member_id, kind, summary, created_at from retro_findings order by created_at desc limit 40')).rows);
-  m = p.match(/^\/api\/cases\/([\w-]+)\/(reply|resolve)$/);
+  m = p.match(/^\/api\/cases\/([\w-]+)\/(reply|resolve|log|action)$/);
   if (m && req.method === 'POST') {
-    const body = await new Promise((ok) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 10000) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(b || '{}')); } catch { ok({}); } }); });
+    const body = await readBody(req);
     if (m[2] === 'reply') return json(res, 200, await reply(m[1], body.text));
-    const status = ['human', 'no_response'].includes(body.outcome) ? 'escalated_human' : 'resolved';
+    if (m[2] === 'log') {                                     // scripted chat mirrored into the case: stored, not delivered
+      const c = (await q('select channel, member_id from cases where case_id=$1', [m[1]])).rows[0]; if (!c) return json(res, 404, { error: 'not found' });
+      const dir = ['in', 'out', 'system'].includes(body.direction) ? body.direction : 'system';
+      await say(m[1], dir, String(body.text || '').slice(0, 600), String(body.source || 'script').slice(0, 20), c.channel, c.member_id, null, false);
+      await q(`update cases set status=case when status in ('awaiting_member') then 'in_conversation' else status end, due_at=null, updated_at=now() where case_id=$1`, [m[1]]);
+      return json(res, 200, { ok: true });
+    }
+    if (m[2] === 'action') { await say(m[1], 'system', String(body.text || '').slice(0, 300), 'employee'); return json(res, 200, { ok: true }); }
+    const status = ['human', 'no_response', 'timeout', 'callback', 'callback_fast', 'ato_stop'].includes(body.outcome) ? 'escalated_human' : 'resolved';
     await resolve(m[1], String(body.outcome || 'resolved').slice(0, 60), status); return json(res, 200, { ok: true, status });
   }
-  return json(res, 404, { error: 'not found' });
+  if (p.startsWith('/api/')) return json(res, 404, { error: 'not found' });
+  return serveStatic(req, res, p);
 }
 
 /* ---------- main ---------- */
 (async () => {
-  await K.ensureTopics(); prod = await K.producer();
+  await ensureSchema(); await K.ensureTopics(); prod = await K.producer();
   await K.consume({ group: 'harbor-agent', topic: cfg.topics.alerts, handler: onAlert, dlqProducer: prod, concurrency: 2 });
   // Delivery adapter: the only part that would change for a real SMS / push provider.
   await K.consume({ group: 'harbor-delivery', topic: cfg.topics.out, dlqProducer: prod, handler: async (m) => {
