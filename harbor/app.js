@@ -31,7 +31,7 @@ const SIGNAL_LABEL = { authority_pressure: 'Someone claiming authority', secrecy
 async function checkLive() {
   try { const j = await (await fetch(API + '/api/status')).json(); S.live.avail = !!j.live; S.live.provider = j.provider || ''; S.live.model = j.model || ''; S.live.timeout = j.timeoutMs || 9000; S.live.backend = !!j.backend; }
   catch { S.live.avail = false; }
-  if (!S.live.avail) S.live.mode = 'scripted';
+  if (!S.live.avail) S.live.mode = 'scripted'; else if (!S.live.chosen) S.live.mode = 'live';   // Live AI is the default whenever a model is available
   render();
   if (S.live.backend) beginStory();
 }
@@ -1048,7 +1048,7 @@ document.addEventListener('change', (ev) => {
   const t = ev.target, a = t.dataset.act;
   if (a === 'planned') { S.planned = t.checked; reset(); }
   else if (a === 'plannedAll') S.sim.plannedAll = t.checked;
-  else if (a === 'mode') { S.live.mode = t.value; reset(); }
+  else if (a === 'mode') { S.live.mode = t.value; S.live.chosen = true; reset(); }
   else if (a === 'tsize') { S.textSize = t.value === 'xl' ? 'xl' : 'large'; try { localStorage.setItem('harbor-textsize', S.textSize); } catch (e) { /* storage blocked */ } }
   else if (a === 'trigmember') S.trig.id = t.value;
   else if (a === 'filter') S.sim.filter = t.value;
