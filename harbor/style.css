@@ -317,18 +317,10 @@ body.modal-open{overflow:hidden}
 .story-grid{grid-template-columns:repeat(auto-fill,minmax(205px,1fr));gap:10px}.story-grid .scn{padding:12px 14px}
 
 /* ---- Sound Credit Union logo beside the Harbor mark ---- */
-.brand-for{color:var(--muted);font-size:14px;margin:0 2px 0 6px}
 .sound-logo{height:44px;width:auto;border-radius:8px;display:block}
 
 /* ---- employee console v2: queue on top, then an operator window ---- */
 .console2{display:flex;flex-direction:column;gap:16px}
-.qhead{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px}.qhead h2{margin:0}
-.qt{display:flex;flex-direction:column}
-.qrow{display:grid;grid-template-columns:minmax(140px,1.1fr) minmax(200px,1.5fr) minmax(170px,1.2fr) minmax(180px,1fr);gap:12px;align-items:center;text-align:left;width:100%;background:transparent;border:0;border-top:1px solid var(--line);padding:10px 12px;color:var(--ink);font-size:15px}
-.qrow.qh{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);border-top:0;padding-top:4px;padding-bottom:4px}
-button.qrow:hover{background:var(--teal-soft)}
-button.qrow[aria-pressed=true]{background:var(--teal-soft);box-shadow:inset 4px 0 0 var(--ink)}
-@media(max-width:900px){.qrow{grid-template-columns:1fr 1fr}.qrow.qh{display:none}}
 .op-h{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}.op-h h2{margin:0}
 .sum{background:var(--warn-soft);border-left:5px solid var(--warn);border-radius:12px;padding:14px 18px}
 .sum-k{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--warn-ink)}
@@ -376,6 +368,3 @@ button.qrow[aria-pressed=true]{background:var(--teal-soft);box-shadow:inset 4px 
 .qlist{position:absolute;left:0;right:0;top:calc(100% + 6px);max-height:360px;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 40px rgba(0,0,0,.28);z-index:30}
 .qitem{display:flex;gap:10px;align-items:center;flex-wrap:wrap;width:100%;text-align:left;background:transparent;border:0;border-top:1px solid var(--line);padding:10px 14px;color:var(--ink);font-size:15px}
 .qitem:first-child{border-top:0}.qitem:hover,.qitem:focus-visible,.qitem[aria-selected=true]{background:var(--teal-soft)}
-.qnav{width:44px;height:48px;border:1px solid var(--line);background:var(--bg);border-radius:12px;font-size:24px;line-height:1;color:var(--ink)}
-.qnav:hover:not(:disabled){background:var(--teal-soft)}.qnav:disabled{opacity:.4;cursor:default}
-.qhint{margin-left:auto}

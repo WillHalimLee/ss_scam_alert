@@ -1031,11 +1031,9 @@ document.addEventListener('click', (ev) => {
   else if (a === 'disc') S.ui.d[t.dataset.k] = !S.ui.d[t.dataset.k];
   else if (a === 'qopen') { S.ui.qOpen = true; S.ui.qText = ''; }
   else if (a === 'qpick') { S.sel = t.dataset.id; S.ui.qOpen = false; S.ui.qText = ''; }
-  else if (a === 'qstep') { const ids = Object.keys(S.cases); if (ids.length) { const i = ids.indexOf(S.sel); S.sel = ids[(i + (+t.dataset.d) + ids.length) % ids.length]; } S.ui.qOpen = false; }
   else if (a === 'coll') { S.ui[t.dataset.k] = !S.ui[t.dataset.k]; if (t.dataset.k === 'log' && S.ui.log) refreshLog(); }
   else if (a === 'rawt') S.ui.raw[t.dataset.id] = !S.ui.raw[t.dataset.id];
   else if (a === 'reset') { S.ui.demoOpen = false; reset(); }
-  else if (a === 'case') S.sel = t.dataset.id;
   else if (a === 'cact') { const k = S.cases[S.sel]; if (S.sel === S.be.mid && caseId()) post('/api/cases/' + caseId() + '/action', { text: t.dataset.v }).catch(() => {}); k.log.push(t.dataset.v); k.status = t.dataset.v.split(';')[0]; k.updated = 'Just now'; }
   else if (a === 'sim') S.sim.selId = t.dataset.id;
   else if (a === 'pcase') { S.pipe.sel = t.dataset.id; pipeFetch(); }
