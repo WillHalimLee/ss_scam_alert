@@ -472,3 +472,5 @@ nav button.lit{animation:lit 1.1s ease-out 3}
 .ping.show{animation:pingin .45s cubic-bezier(.2,.8,.2,1) both}
 @keyframes pingin{from{opacity:0;transform:translateY(-10px) scale(.98)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){nav button.lit,.ping.show{animation:none}}
+
+.chip.tg.low{background:var(--bg);color:var(--muted)}.chip.tg.medium{background:var(--amber-soft,#FFF1D6);color:#7A4B00}.chip.tg.high{background:var(--red-soft,#FDE3E1);color:var(--red,#B3261E)}

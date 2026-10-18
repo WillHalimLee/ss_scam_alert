@@ -59,8 +59,8 @@ async function loadState(memberId) {
     finally { client.release(); }
 
     if (alert) await publishAlert(alert);
-    // Only meaningful events go to the slow, LLM-based tagger. Routine card swipes and logins do not.
-    if (ev.isKeyEvent(e)) await K.send(prod, cfg.topics.scored, e.member_id, { schema: 1, history: !!e.h, event: e, decision: decision ? { level: decision.level, rules: decision.rules.map((r) => r.id) } : null });
+    // Every event continues to the tagger (small model) after the rules have seen it, so every event ends up categorized and tagged in Postgres.
+    await K.send(prod, cfg.topics.scored, e.member_id, { schema: 1, history: !!e.h, event: e, decision: decision ? { level: decision.level, rules: decision.rules.map((r) => r.id) } : null });
     if (++processed % 500 === 0) console.log(`[scorer] ${processed} events`);
     if (alert) console.log(`[scorer] ALERT ${alert.payload.level.toUpperCase()} ${e.member_id} ${alert.payload.rules.map((r) => r.id).join('+')} $${Math.round(e.amt)} in ${alert.payload.decided_ms}ms`);
   };

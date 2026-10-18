@@ -134,3 +134,29 @@ create view v_rule_outcomes as
   join case_alerts ca on ca.alert_id = a.alert_id
   join cases c on c.case_id = ca.case_id
   group by 1, 2, 3;
+
+-- Tag vocabulary. The tagger reads it and may add to it; code caps its size.
+create table if not exists tags (
+  name text primary key,
+  description text not null,
+  created_by text not null default 'seed',          -- seed | llm
+  uses int not null default 0,
+  created_at timestamptz not null default now()
+);
+alter table event_notes add column if not exists category text;
+alter table event_notes add column if not exists new_tag boolean not null default false;
+-- Analyst agent: reads tagged history from Postgres at a trigger and decides whether a conversation is warranted.
+create table if not exists analyses (
+  id serial primary key,
+  member_id text not null,
+  trigger_event text,
+  trigger_reason text,
+  context jsonb not null default '{}',
+  verdict jsonb not null default '{}',
+  action text not null,                              -- started_conversation | recorded_only | blocked
+  action_reason text,
+  model text,
+  latency_ms int,
+  created_at timestamptz not null default now()
+);
+create index if not exists analyses_member on analyses (member_id, created_at);

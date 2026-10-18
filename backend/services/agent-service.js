@@ -9,27 +9,35 @@ const agent = llm.agent;
 
 const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
 const railWord = (r) => ({ P2P: 'P2P payment', Wire: 'wire', Cash: 'cash withdrawal', 'External Transfer': 'external transfer', ACH: 'ACH payment' }[r] || String(r || 'payment').toLowerCase());
+/** What the member may be told about why something was flagged: plain facts, no rule names, thresholds or staff wording. */
+const MEMBER_WHY = { ATO: 'your password, email and phone number were all changed just before this payment started', RAMP: 'there have been a few payments to new people lately, and this one is bigger',
+  HIGHSTAKES: 'this is much more than usual, and it is hard to get back once sent', CONTACT: 'this came right after contact with Sound, and it is a large payment', FRESH: 'this is more than you usually send to someone new' };
+const whyFor = (a) => (a.rules ? a.rules.map((r) => (r.id === 'ANALYST' ? r.reason : MEMBER_WHY[r.id] || 'this looks different from usual activity')) : [a.summary]);
 const NEVER = 'Sound will never ask for your password or a code, and never asks you to move money.';
 
 /* ---------- outbound message composition ---------- */
 function template(a, name) {
   const hi = name ? `Hi ${name}, this is Harbor from Sound.` : 'Hi, this is Harbor from Sound.';
   const amt = a.amount ? money(a.amount) : 'a payment';
-  if (a.source === 'retro') return `${hi} I'm checking in on some recent activity: ${a.summary} Nothing is wrong on your side. If anything looks unfamiliar, you can talk to a Sound employee right away. ${NEVER}`;
+  if (a.source === 'analyst') return `${hi} I noticed some activity on your account that I'd like to check with you: ${a.summary} Nothing has been paused, and nothing is wrong on your side. If anything looks unfamiliar, you can talk to a Sound employee right away. ${NEVER}`;
+  if (a.source === 'retro') return `${hi} I'm checking in on some recent activity: ${a.summary} Nothing is wrong on your side. If anything looks unfamiliar, you can talk to a Sound employee right away. ${NEVER} Does any of it look unfamiliar to you?`;
   if (a.ato) return `${hi} A few minutes ago the password, email and phone number on your account were changed, and a ${amt} ${railWord(a.rail)} to a new recipient was started. I've paused it, and nothing has left your account. Was that you? Open your Sound app to review. ${NEVER}`;
-  if (a.level === 'confirm') return `${hi} Quick check on your ${amt} ${railWord(a.rail)} to a newer recipient, since it's more than you usually send. Open your Sound app and tell me a bit about it. ${NEVER}`;
-  return `${hi} Your ${amt} ${railWord(a.rail)} is paused for a quick check. Nothing has been sent, and you're in control. Open your Sound app so we can talk it through. ${NEVER}`;
+  if (a.level === 'confirm') return `${hi} Quick check on your ${amt} ${railWord(a.rail)} to a newer recipient, since it's more than you usually send. ${NEVER} What is this payment for?`;
+  return `${hi} Your ${amt} ${railWord(a.rail)} is paused for a quick check. Nothing has been sent, and you're in control. ${NEVER} What is this payment for?`;
 }
 const COMPOSE_SYSTEM = `You write the FIRST outbound message from Harbor, a personal security analyst at Sound Credit Union, to a member about their account. 2-3 short sentences, plain language, warm and calm. Return ONLY JSON {"message": "..."}.
-Rules: say what happened in plain words; if a payment is paused say nothing has been sent and the member is in control; never say "scam", "fraud" or "criminal"; never ask for passwords, PINs or codes; do not promise safety or recovery; do not include links; end by inviting them to open the Sound app (or reply) and include that Sound never asks for a password or code or to move money. Use the member's first name only if given.`;
+Rules: say only what Sound's systems know, in plain words, from the facts given; if a payment is paused say nothing has been sent and the member is in control; you do NOT yet know why the member is doing this, so do not mention scams, impersonation, police, banks or government, and give no warnings or advice about them; never say "scam", "fraud" or "criminal"; never ask for passwords, PINs or codes; do not promise safety or recovery; do not include links; include that Sound never asks for a password or code or to move money; END with exactly one open question the member can answer in their own words (if takeover is suspected, ask whether they made the changes; otherwise ask what the payment is for). Use the member's first name only if given.
+The input JSON has a must_say list: every item must be stated in your own words. Style example (change the wording to fit the facts): {"message": "Hi Dana, this is Harbor from Sound. Your $4,000 wire is paused for a quick check, and nothing has been sent. You're in control. Sound never asks for your password or a code, or to move money. What is this payment for?"}`;
 async function compose(a, name) {
   const t0 = Date.now(), fallback = { text: template(a, name), source: 'template', ms: 0 };
   try {
     const out = await Promise.race([llm.completeJSON(COMPOSE_SYSTEM, JSON.stringify({ first_name: name || null, source: a.source, level: a.level, takeover_suspected: !!a.ato, payment_already_completed: !!a.completed,
-      amount: a.amount || null, rail: railWord(a.rail), why: a.rules ? a.rules.map((r) => r.reason) : [a.summary] }), 'compose', a.member_id),
+      amount: a.amount || null, rail: railWord(a.rail), why: whyFor(a),
+      must_say: (a.completed ? ['the payment already went through'] : a.level === 'hold' ? ['the payment is paused', 'nothing has been sent', 'the member is in control'] : ['this is a quick check, nothing is blocked']).concat(a.ato ? ['the password, email and phone number on the account were changed just before this payment started'] : []) }), 'compose', a.member_id),
       new Promise((_, no) => setTimeout(() => no(new Error('compose timeout')), cfg.composeTimeoutMs))]);          // a slow model must not hold the member up: fall back to the template
     const text = out && String(out.message || '').replace(/\s+/g, ' ').trim();
-    if (!text || text.length > 700 || agent.BAD_REPLY.some((r) => r.test(text)) || !/never ask/i.test(text)) return Object.assign(fallback, { ms: Date.now() - t0 });
+    const heldOk = a.level !== 'hold' || a.completed || (/\b(paused|on hold|held)\b/i.test(text) && /\bnothing\b/i.test(text));      // a held payment must be said to be paused, with nothing sent
+    if (!text || text.length > 700 || agent.BAD_REPLY.some((r) => r.test(text)) || !/never ask/i.test(text) || !heldOk || !/\?/.test(text) || (a.ato && !/password/i.test(text))) return Object.assign(fallback, { ms: Date.now() - t0 });   // otherwise the safe template is used
     return { text, source: 'llm', ms: Date.now() - t0, model: (llm.provider() || {}).model };
   } catch (e) { return Object.assign(fallback, { ms: Date.now() - t0 }); }
 }
@@ -42,7 +50,7 @@ async function say(caseId, direction, body, source, channel, memberId, meta, del
   return r.rows[0].id;
 }
 function ctxFrom(a) {
-  return { amount: a.amount ? money(a.amount) : '', rail: railWord(a.rail), recipient: a.rail === 'Cash' ? '' : a.recipient_status === 'New' ? 'someone new' : 'a recipient', reasons: a.rules ? a.rules.map((r) => r.reason) : [a.summary],
+  return { amount: a.amount ? money(a.amount) : '', rail: railWord(a.rail), recipient: a.rail === 'Cash' ? '' : a.recipient_status === 'New' ? 'someone new' : 'a recipient', reasons: whyFor(a),
     ato: !!a.ato, level: a.level === 'confirm' || a.level === 'followup' ? 'confirm' : 'hold', completed: !!a.completed, trustedContact: !!a.trusted_contact };
 }
 async function onAlert(a) {
@@ -112,7 +120,7 @@ async function demoStart(mid, planned) {
   const t = demo.triggerFor(mid, planned); if (!t) throw Object.assign(new Error('no trigger payment for this story'), { code: 422 });
   const cs = (await q('select case_id from cases where member_id=$1', [mid])).rows.map((r) => r.case_id);
   if (cs.length) { await q('delete from messages where case_id = any($1)', [cs]); await q('delete from case_alerts where case_id = any($1)', [cs]); await q('delete from cases where case_id = any($1)', [cs]); }
-  for (const tb of ['decisions', 'alerts', 'event_notes', 'review_queue', 'retro_findings', 'member_state', 'events']) await q(`delete from ${tb} where member_id=$1`, [mid]);
+  for (const tb of ['analyses', 'decisions', 'alerts', 'event_notes', 'review_queue', 'retro_findings', 'member_state', 'events']) await q(`delete from ${tb} where member_id=$1`, [mid]);
   await K.send(prod, cfg.topics.raw, mid, { schema: 1, type: '__reset', member_id: mid, planned: planned || null, ts: new Date().toISOString() });
   const hist = demo.historyOf(mid, t), gen = (streams.get(mid) || 0) + 1, gap = Math.max(10, Math.min(60, 3000 / Math.max(1, hist.length)));
   streams.set(mid, gen);
@@ -138,9 +146,11 @@ async function view(mid, eventId) {
   const decision = evId ? await one('select * from decisions where event_id=$1', [evId]) : null;
   const note = evId ? await one('select tag, risk, note, source, model, latency_ms, disagrees from event_notes where event_id=$1', [evId]) : null;
   const messages = c ? (await q('select id, direction, body, source, meta, delivered_at, created_at from messages where case_id=$1 order by id', [c.case_id])).rows : [];
+  const tags = Object.fromEntries((await q('select event_id, category, tag, risk, note, new_tag from event_notes where member_id=$1', [mid])).rows.map((r) => [r.event_id, r]));
+  const analysis = await one(`select id, trigger_reason, verdict, action, action_reason, model, latency_ms, created_at, context->'risk_histogram' histogram, (context->>'events_seen')::int events_seen from analyses where member_id=$1 order by id desc limit 1`, [mid]);
   const member = await one('select first_name from members where member_id=$1', [mid]);
   const out = messages.find((m) => m.direction === 'out');
-  return { member_id: mid, first_name: member && member.first_name, processed, event, decision, alert: ald && { alert_id: ald.alert_id, level: ald.level, kind: ald.kind, payload: ald.payload, published: ald.published },
+  return { member_id: mid, first_name: member && member.first_name, processed, tags, analysis, event, decision, alert: ald && { alert_id: ald.alert_id, level: ald.level, kind: ald.kind, payload: ald.payload, published: ald.published },
     note, case: c, messages,
     timings: { ingested: iso(event && event.ingested_at), decided: iso(decision && decision.decided_at), decide_ms: decision && decision.latency_ms, alerted: iso(ald && ald.created_at),
       composed: iso(out && out.created_at), delivered: iso(out && out.delivered_at), compose_ms: out && out.meta && out.meta.ms, compose_model: out && out.meta && out.meta.model, compose_source: out && out.source } };
@@ -163,6 +173,11 @@ async function route(req, res) {
   if (p === '/api/chat' && req.method === 'POST') { try { return json(res, 200, await agent.chat(await readBody(req))); } catch (e) { console.error('chat error:', e.message); return json(res, 502, { error: 'agent unavailable' }); } }
   if (p === '/api/demo/start' && req.method === 'POST') { const b = await readBody(req); return json(res, 200, await demoStart(String(b.member || ''), b.planned)); }
   if (p === '/api/demo/send' && req.method === 'POST') { const b = await readBody(req); return json(res, 200, await demoSend(String(b.member || ''), b.event)); }
+  if (p === '/api/analyst/run' && req.method === 'POST') {                          // ask the analyst agent to look at a member now
+    const b = await readBody(req), last = (await q('select event_id, ts from events where member_id=$1 order by ts desc limit 1', [String(b.member || '')])).rows[0];
+    if (!last) return json(res, 404, { error: 'no events for that member' });
+    await K.send(prod, cfg.topics.analysis, b.member, { member_id: b.member, event_id: last.event_id, ts: new Date(last.ts).toISOString(), reason: 'manual request' }); return json(res, 200, { ok: true });
+  }
   if (p === '/api/demo/state') return json(res, 200, await view(url.searchParams.get('member') || '', url.searchParams.get('event') || null));
   if (p === '/api/console') {
     const ids = (await q('select distinct on (member_id) member_id from cases order by member_id, opened_at desc')).rows.map((r) => r.member_id);
@@ -175,7 +190,8 @@ async function route(req, res) {
       one('select count(*)::int n from events'), one('select level, count(*)::int n from decisions group by 1'), one('select source, level, count(*)::int n from alerts group by 1,2'),
       one('select status, count(*)::int n from cases group by 1'), one('select risk, source, count(*)::int n from event_notes group by 1,2'), one(`select count(*)::int n from review_queue where status='open'`),
       one('select kind, count(*)::int n from retro_findings group by 1'), one('select coalesce(percentile_cont(0.5) within group (order by latency_ms),0)::int p50, coalesce(max(latency_ms),0)::int max from decisions')]);
-    return json(res, 200, { events: events[0].n, decisions, alerts, cases, notes, review_open: review[0].n, retro, latency: latency[0],
+    const tagList = await one('select name, description, created_by, uses from tags order by uses desc, name'), analyses = await one(`select a.id, a.member_id, a.trigger_reason, a.action, a.action_reason, a.verdict, a.model, a.latency_ms, a.created_at from analyses a order by a.id desc limit 10`);
+    return json(res, 200, { tags: tagList, analyses, events: events[0].n, decisions, alerts, cases, notes, review_open: review[0].n, retro, latency: latency[0],
       recentAlerts: await one(`select a.alert_id, a.member_id, a.source, a.kind, a.level, a.created_at, n.risk, n.note from alerts a left join event_notes n on n.event_id=a.event_id order by a.created_at desc limit 12`) });
   }
   if (p === '/api/cases') return json(res, 200, (await q(`select c.case_id, c.member_id, c.status, c.channel, c.ato, c.outcome, c.opened_at, c.due_at, c.signals, c.handoff_note, c.ctx,

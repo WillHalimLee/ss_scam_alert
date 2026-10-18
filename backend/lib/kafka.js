@@ -4,7 +4,7 @@ const kafka = new Kafka({ clientId: 'harbor', brokers: cfg.brokers, logLevel: lo
 
 async function ensureTopics() {
   const admin = kafka.admin(); await admin.connect();
-  const t = cfg.topics, want = [[t.raw, cfg.partitions], [t.scored, cfg.partitions], [t.alerts, cfg.partitions], [t.out, cfg.partitions], [t.dlq, 1]];
+  const t = cfg.topics, want = [[t.raw, cfg.partitions], [t.scored, cfg.partitions], [t.alerts, cfg.partitions], [t.out, cfg.partitions], [t.analysis, cfg.partitions], [t.dlq, 1]];
   const have = new Set(await admin.listTopics());
   const missing = want.filter(([n]) => !have.has(n)).map(([topic, numPartitions]) => ({ topic, numPartitions }));
   if (missing.length) { try { await admin.createTopics({ topics: missing, waitForLeaders: true }); } catch (e) { /* another service created it first */ } }

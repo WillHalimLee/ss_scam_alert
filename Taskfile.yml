@@ -78,7 +78,7 @@ tasks:
   logs:
     desc: Follow backend service logs.
     cmds:
-      - tail -n 20 -f backend/.logs/scorer.log backend/.logs/tagger.log backend/.logs/agent-service.log
+      - tail -n 20 -f backend/.logs/scorer.log backend/.logs/tagger.log backend/.logs/analyst.log backend/.logs/agent-service.log
 
   pages:
     desc: Refresh docs/ (the GitHub Pages build) from harbor/.

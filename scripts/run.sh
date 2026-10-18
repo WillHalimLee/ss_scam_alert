@@ -60,7 +60,11 @@ if [ -z "$PROVIDER" ]; then
   fi
 fi
 export HARBOR_PROVIDER="$PROVIDER" HARBOR_MODEL="$MODEL"
+TAG_MODEL="${HARBOR_TAG_MODEL:-qwen2.5:3b}"; export HARBOR_TAG_MODEL="$TAG_MODEL"
 ok "provider: $PROVIDER${PROVIDER:+ ($MODEL)}"
+if [ "$PROVIDER" = ollama ] && ! curl -s -m 2 localhost:11434/api/tags | grep -q "\"$TAG_MODEL\""; then
+  warn "pulling the small tagging model $TAG_MODEL (one time, about 2 GB)"; ollama pull "$TAG_MODEL" >"$LOGS/ollama-pull.log" 2>&1 || warn "could not pull $TAG_MODEL: events will get rule tags only"
+fi
 if [ "$PROVIDER" = ollama ]; then   # load the model now so the first chat message isn't slow
   curl -s -m 120 localhost:11434/api/generate -d "{\"model\":\"$MODEL\",\"prompt\":\"hi\",\"stream\":false,\"keep_alive\":\"30m\"}" >/dev/null 2>&1 &
   BG_PIDS+=($!)
@@ -80,8 +84,8 @@ if [ "$RESET" = true ]; then (cd backend && node scripts/reset.js 2>&1 | grep -E
 (cd backend && node scripts/seed.js 2>&1 | grep -v -E "Timeout|trace-warnings")
 
 say "6/7 Pipeline workers"
-(cd backend && CASE_TIMEOUT_SEC="${CASE_TIMEOUT_SEC:-600}" ./scripts/start-all.sh scorer tagger) | sed 's/^/  /'
-ok "scorer and tagger are consuming events.raw (Kafka)"
+(cd backend && CASE_TIMEOUT_SEC="${CASE_TIMEOUT_SEC:-600}" ./scripts/start-all.sh scorer tagger analyst) | sed 's/^/  /'
+ok "scorer, tagger and analyst are running"
 
 say "7/7 API server and app"
 URL="http://localhost:$CHAT_PORT"

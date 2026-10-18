@@ -69,7 +69,7 @@ async function beginStory(rec = R()) {
     be.total = j.historyTotal; be.trigger = j.triggerEventId;
     for (let i = 0; i < 100; i++) {
       const v = await getState(rec.mid); if (be.dead) return;
-      be.done = Math.min(v.processed, j.historyTotal); render();
+      be.done = Math.min(v.processed, j.historyTotal); be.tags = v.tags; render();
       if (v.processed >= j.historyTotal) break; await sleep(400);
     }
     be.phase = 'ready';
@@ -95,12 +95,15 @@ async function sendPayment() {
   rec.phone = { step: level === 'none' ? 'sent' : level === 'hold' ? 'paused' : 'chat' }; if (rec.phone.step === 'chat') startChat(rec);
   render();
 }
-setInterval(async () => {                                                    // keep every story's case in step with what the pipeline stored
+setInterval(async () => {                                                    // keep every story's case, tags and analyst read in step with what the pipeline stored
   if (!S.live.backend) return;
   let changed = false;
   for (const rec of Object.values(S.rec)) {
-    const be = rec.be; if (be.phase !== 'decided' || !be.trigger) continue;
-    try { const v = await getState(rec.mid, be.trigger); if (be.dead) continue; const old = JSON.stringify(be.view); be.view = v; if (JSON.stringify(v) !== old) changed = true; } catch (e) { /* offline */ }
+    const be = rec.be; if (be.phase !== 'ready' && be.phase !== 'decided') continue;
+    try {
+      const v = await getState(rec.mid, be.phase === 'decided' ? be.trigger : null); if (be.dead) continue;
+      const old = JSON.stringify([be.view, be.tags]); be.tags = v.tags; if (be.phase === 'decided') be.view = v; if (JSON.stringify([be.view, be.tags]) !== old) changed = true;
+    } catch (e) { /* offline */ }
   }
   if (changed && S.tab === 'console') render();
 }, 2000);
@@ -181,7 +184,7 @@ function warn(intro) {
     choices: [{ t: 'Talk to a Sound employee', end: 'human' }, { t: 'Keep it paused while I check', end: 'paused_self' }, { t: 'Let my trusted contact know', go: 'trusted' }, { t: 'Cancel the payment', end: 'cancelled' }, { t: 'I understand the risk. Send it anyway', end: 'override' }] };
 }
 const PURPOSE = [{ t: 'Buying a home or vehicle', go: 'home' }, { t: 'Helping a family member', go: 'family' }, { t: 'Paying someone I met online', go: 'online' },
-  { t: 'Someone told me to move money (bank, police, government)', go: 'authority' }, { t: 'Paying a contractor, landlord or business', go: 'business' },
+  { t: 'Someone contacted me and asked me to send it', go: 'contact' }, { t: 'Paying a contractor, landlord or business', go: 'business' },
   { t: 'Moving money to my own account', go: 'own' }, { t: 'Something else / not sure', go: 'unsure' }];
 function node(id, c) {
   const first = c.dec.rules[0];
@@ -198,15 +201,15 @@ function node(id, c) {
       choices: [{ t: 'Yes, I spoke with them', end: 'ok' }, { t: 'Not exactly', go: 'family_warn' }] },
     start: { bot: [`Hi, I'm Harbor, Sound's security analyst. I paused your ${c.pay} for a quick check. <b>Nothing has gone out, and you're in control.</b>`,
       memberReason(c),
-      'One thing worth knowing: Sound, the police and government agencies never ask anyone to move money to keep it safe. So, what\'s this payment for?'],
+      'What\'s this payment for?'],
       choices: PURPOSE },
     fallback: { bot: ['Let me guide you with a few quick questions instead.', 'What is this payment for?'], choices: PURPOSE },
     fallback_ato: { bot: ['Let me ask a couple of quick questions instead.', 'Were the password, email and phone changes made by you?'], choices: [{ t: 'Yes, that was me', go: 'ato_yes' }, { t: 'No, that wasn\'t me', end: 'ato_stop' }, { t: 'I\'m not sure', end: 'ato_stop' }] },
-    home: { bot: ['Big purchases are exactly when criminals slip in fake payment instructions.', 'Did you get these payment details straight from the title company, lender or seller and confirm them by phone using a number you already had?'],
+    home: { bot: ['Big purchases are a good time to double-check payment details.', 'Did you get these payment details straight from the title company, lender or seller and confirm them by phone using a number you already had?'],
       choices: [{ t: 'Yes, I verified them', end: 'ok' }, { t: 'I\'m not sure', go: 'verify_warn' }] },
     verify_warn: { bot: ['No problem, let\'s check together. Closing and purchase fraud often changes the account number by email at the last minute.'],
       choices: [{ t: 'Talk to a Sound employee now', end: 'human' }, { t: 'I\'ll verify and come back (stay paused)', end: 'paused_self' }, { t: 'Cancel the payment', end: 'cancelled' }] },
-    family: { bot: ['That\'s generous. Scammers sometimes pretend to be family in a hurry, so one question:', 'Have you spoken with them directly, on a number you already had?'],
+    family: { bot: ['Thanks. One quick question:', 'Have you spoken with them directly, on a number you already had?'],
       choices: [{ t: 'Yes, I spoke with them', end: 'ok' }, { t: 'No, they contacted me / I couldn\'t reach them', go: 'family_warn' }, { t: 'Not sure', go: 'family_warn' }] },
     family_warn: warn('Thank you for being honest. An urgent request from a "family member" or "lawyer", especially with "keep it secret", matches a common scam. That doesn\'t mean it is one.'),
     online: { bot: ['Online relationships can be real. I\'m not judging.', 'Have you met this person in person or on a live video call?'],
@@ -215,6 +218,8 @@ function node(id, c) {
       choices: [{ t: 'First time', end: 'ok' }, { t: 'It\'s been growing', go: 'online_warn' }] },
     online_warn: { bot: ['Payments that grow over time to someone not met in person, especially for an "investment", are a pattern we see often. You\'re not foolish. These are built to feel real.', 'Real opportunities are still there tomorrow, so a pause costs nothing.'],
       choices: [{ t: 'Talk to a Sound employee (no pressure)', end: 'human' }, { t: 'Pause 24 hours', end: 'paused_24' }, { t: 'Let my trusted contact know', go: 'trusted' }, { t: 'Cancel the payment', end: 'cancelled' }, { t: 'I understand the risk. Send it anyway', end: 'override' }] },
+    contact: { bot: ['Thank you for telling me. Who contacted you, and how?'],
+      choices: [{ t: 'Someone saying they are from a bank, police or government agency', go: 'authority' }, { t: 'Someone saying they are a lawyer, or a relative or friend in trouble', go: 'family' }, { t: 'A person or business I already deal with', go: 'business' }, { t: 'I\'m not sure', go: 'unsure' }] },
     authority: { bot: ['Thank you for telling me. I want to be direct: <b>Sound, the police, the FBI and the IRS will never ask you to move or hand over money to protect it.</b> Anyone who does is not who they say they are.', 'Are they asking you to stay on the phone, or to keep this secret?'],
       choices: [{ t: 'Yes', go: 'authority_warn' }, { t: 'No', go: 'authority_warn' }, { t: 'I\'m not sure', go: 'authority_warn' }] },
     authority_warn: warn('You can hang up at any time. Real officials won\'t mind if you call back on a number you look up yourself.'),
@@ -222,9 +227,9 @@ function node(id, c) {
       choices: [{ t: 'Yes, I have paperwork', end: 'ok' }, { t: 'Not yet', go: 'business_warn' }] },
     business_warn: warn('Paying a lot up front without paperwork is a common contractor pattern. Staged payments are normal and often safer.'),
     own: { bot: ['Moving money to your own account is common. Did you open that account yourself and set up the login yourself?'],
-      choices: [{ t: 'Yes, I set it up myself', end: 'ok' }, { t: 'Someone helped or told me to', go: 'authority_warn' }] },
+      choices: [{ t: 'Yes, I set it up myself', end: 'ok' }, { t: 'Someone helped or told me to', go: 'contact' }] },
     unsure: { bot: ['That\'s okay. Being unsure is reason enough to pause. Who asked you to make this payment, and how did they reach you?'],
-      choices: [{ t: 'Someone called or texted me', go: 'authority' }, { t: 'Someone I know in person', go: 'family' }, { t: 'I decided on my own', end: 'ok' }, { t: 'I\'d rather talk to a person', end: 'human' }] },
+      choices: [{ t: 'Someone called or texted me', go: 'contact' }, { t: 'Someone I know in person', go: 'family' }, { t: 'I decided on my own', end: 'ok' }, { t: 'I\'d rather talk to a person', end: 'human' }] },
     trusted: { bot: [`I'll send your trusted contact this message: <i>"${esc(c.name === 'you' ? 'Your friend' : c.name)} asked Sound to let you know about a large payment they're about to make. You may want to give them a call."</i>`, 'They are told, <b>never given access</b> to your account, and you can remove them any time. They won\'t see account details.'],
       choices: [{ t: 'Send that message', end: 'trusted_sent' }, { t: 'No, don\'t contact anyone', back: true }] },
   };
@@ -251,13 +256,14 @@ function startChat(rec = R()) {
   S.log.rows = [];
   if (S.live.mode === 'live' && S.live.avail) ch.live = { hist: [], signals: {}, state: 'calm', note: '', pending: false, trusted: false, provider: S.live.provider };
   const v = rec.be.view, om = v && v.messages && v.messages.find((x) => x.direction === 'out'), open = om ? om.body : null;
-  if (open) { ch.msgs.push({ f: 'bot', h: esc(open) }); ch.skipFirst = true; }   // the pipeline already composed and stored the first message
+  if (open && ch.live) { ch.msgs.push({ f: 'bot', h: esc(open) }); ch.skipBots = true; }   // Live AI: the first message was written from the facts and ends with the question, so the script's own lines are skipped
   pushNode(first, ch);
 }
 function pushNode(id, ch = S.chat) {
   const n = node(id, ch.c);
   ch.path.push(id); ch.cur = id;
-  for (const b of n.bot) { if (ch.skipFirst && typeof b === 'string') { ch.skipFirst = false; continue; } ch.queue.push(typeof b === 'string' ? { f: 'bot', h: b } : { f: 'sys', h: b.sys }); }
+  const skip = ch.skipBots; ch.skipBots = false;
+  for (const b of skip ? [] : n.bot) { ch.queue.push(typeof b === 'string' ? { f: 'bot', h: b } : { f: 'sys', h: b.sys }); }
   drain(ch);
 }
 /** Harbor's messages arrive one at a time: a typing indicator, then the message, then a beat before the next. */
@@ -299,7 +305,7 @@ function liveChips(ch) {
   return out;
 }
 function liveCtx(c) {
-  return { amount: c.amt, rail: c.rail, recipient: c.recip, reasons: c.dec.rules.map((r) => r.reason), ato: c.ato, level: c.dec.level,
+  return { amount: c.amt, rail: c.rail, recipient: c.recip, reasons: [memberReason(c).replace(/\s*So I wanted to check in first\.?/, '').replace(/\s*I wanted to make sure it's really you\.?/, '')], ato: c.ato, level: c.dec.level,
     trustedContact: D.events[c.sc.mid].some((e) => e.t <= c.dec.t && e.tc) };
 }
 async function sendLive(text) {
@@ -374,7 +380,7 @@ function phoneHTML() {
   if (p.step === 'sending') return { html: `${bar(c.ato ? 'Sound (criminal\'s session)' : 'Sound Credit Union')}<div class="body"><div class="card"><h2>Checking this payment…</h2><p class="muted">Harbor is looking at it now. This takes a moment.</p><div class="msg bot typing" role="status" aria-label="Checking"><span></span><span></span><span></span></div></div></div>` };
   if (p.step === 'sent') return { html: `${bar('Sound Credit Union')}<div class="body"><div class="outcome green"><h2>Payment sent</h2>No friction. Harbor looked and let it through.</div></div><div class="foot"><button class="btn alt block" data-act="reset">Replay</button></div>` };
   if (p.step === 'paused') {
-    const why = c.ato ? '' : `<div class="pcap">Why Harbor paused it</div><div class="pwhy">${esc(dec.rules[0] ? dec.rules[0].reason : 'Unusual activity.')} This is a safety check, not an accusation.</div>`;
+    const why = c.ato ? '' : `<div class="pcap">Why Harbor paused it</div><div class="pwhy">${esc(memberReason(c))} This is a safety check, not an accusation.</div>`;
     return { html: `${bar(c.ato ? 'Sound (criminal\'s session)' : 'Sound Credit Union')}<div class="body">
       <span class="pill">Paused. Nothing has been sent.</span>
       <h2 class="ptitle">${c.ato ? 'This payment is under review' : 'Your ' + esc(railWord(dec.rail)) + ' is paused for a quick look'}</h2>
@@ -384,7 +390,7 @@ function phoneHTML() {
       <div class="foot"><button class="btn block" data-act="notify">${c.ato ? 'Switch to Sarah\'s real phone' : 'Next: Harbor\'s message arrives'}</button></div>` };
   }
   if (p.step === 'lock') {
-    const real = openingText();
+    const real = S.live.mode === 'live' ? openingText() : null;
     const text = real ? real : c.ato ? 'Sound: A payment was paused on your account. Open your Sound app to review. We will never ask for your password or a code.' : 'Sound Harbor: Your payment is paused for a quick check. Nothing was sent. Open the Sound app to review.';
     const title = c.ato ? 'A payment was paused on your account' : `Your ${money(dec.amt)} ${railWord(dec.rail)} is paused`;
     return { html: `<div class="lock"><p class="ldate">Saturday, October 17</p><div class="time" style="text-align:center">9:41</div><p class="lwho">${c.ato ? 'Sarah\'s phone (number on file before today)' : 'Your phone'}</p>
@@ -610,6 +616,14 @@ const ACTIONS = [
   { t: 'Escalate', log: 'Escalated to fraud team; case created', status: 'Escalated to fraud team', cls: 'alt' },
   { t: 'Start recovery', log: 'Recovery started: wire recall / dispute checklist opened', status: 'Recovery in progress', cls: 'danger' },
 ];
+function analystBlock(k) {
+  const an = k.real && k.real.analysis; if (!S.live.backend || !k.real) return '';
+  if (!an) return '<div class="sum-k" style="margin-top:12px">Analyst</div><p class="small muted" style="margin:2px 0 0">Reviewing the account activity…</p>';
+  const v = an.verdict || {}, act = { started_conversation: ['green', 'Started a conversation'], recorded_only: ['grey', 'Added as context'], blocked: ['warn', 'Blocked by a safety check'] }[an.action] || ['grey', an.action];
+  return `<div class="sum-k" style="margin-top:12px">Analyst's read <span class="chip ${v.risk === 'high' ? 'red' : v.risk === 'medium' ? 'warn' : 'grey'}">${esc(v.risk || '')} risk</span> <span class="chip ${act[0]}">${act[1]}</span></div>
+    <p class="sum-p" style="margin:4px 0 0">${esc(v.assessment || '')}</p>${(v.key_signals || []).length ? `<p class="small" style="margin:4px 0 0">${v.key_signals.map((x) => `<span class="chip grey">${esc(x)}</span>`).join(' ')}</p>` : ''}
+    <p class="small muted" style="margin:4px 0 0">${esc(an.action_reason || '')}</p>`;
+}
 function convoHTML(k) {
   if (!k) return '<p class="small muted">No conversation yet.</p>';
   const msgs = (k.msgs || []).length ? k.msgs : openingLines(k).map((t) => ({ f: 'bot', t }));
@@ -651,7 +665,7 @@ function actionsAside(k) {
     ${k && k.acts && k.acts.length ? `<div class="sum-k" style="margin-top:12px">Done so far</div><ul class="mini">${k.acts.slice(-3).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</section>
     <section class="card convo"><h2>Conversation ${k && stageOf(k) === 3 && !k.key ? '<span class="chip green">Live</span>' : ''}</h2><div class="cbody">${convoHTML(k)}</div>${composerHTML(k)}</section></aside>`;
 }
-const ACTOR = { Pipeline: 'grey', 'Rules engine': 'warn', Harbor: 'accent', Member: 'green', You: 'ink' };
+const ACTOR = { Analyst: 'green', Pipeline: 'grey', 'Rules engine': 'warn', Harbor: 'accent', Member: 'green', You: 'ink' };
 const TRIGGER = { ATO: 'Takeover pattern', RAMP: 'Slow-burn ramp', HIGHSTAKES: 'Large wire or cash', CONTACT: 'Paid right after contacting Sound', FRESH: 'Bigger payment to someone new' };
 const stripHTML = (h) => String(h).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
 const memberName = (mid) => (mem[mid] && mem[mid].persona) || 'Member ' + mid;
@@ -719,7 +733,9 @@ function stepsFor(k) {
   steps.push({ a: 'Rules engine', t: 'Payment started, rules checked', s: 'done', time: fmt(d.t), b: `${money(d.amt)} ${esc(railWord(d.rail))}${d.rs === 'New' ? ' to a new recipient' : ''}. ${d.rules.length === 1 ? 'One rule' : d.rules.length + ' rules'} matched, so the result is <b>${d.level === 'hold' ? 'pause the payment' : 'a light check'}</b>.${checks}${d.suppress.length ? `<div class="small">Look-alike check: ${d.suppress.map(esc).join(' ')}</div>` : ''}` });
   const rl = k.real, tm = rl && rl.timings;
   steps.push({ a: 'Pipeline', t: 'Payment held and an alert raised', s: 'done', time: tm && tm.alerted ? new Date(tm.alerted).toLocaleTimeString() : '', b: (rl ? `<div class="small"><b>Real run:</b> rules decided in ${tm.decide_ms} ms · alert <code>${esc(rl.alert ? rl.alert.alert_id : '')}</code> saved to Postgres and published to Kafka.</div>` : '') + 'The payment stays pending instead of completing, which buys a window of minutes. The alert is saved, then published for the agent. Each member gets one case, so a second alert joins this one instead of sending another message.' });
-  if (rl && rl.note) steps.push({ a: 'Pipeline', t: 'AI tagger added a note (advisory)', s: 'done', b: `<span class="chip ${rl.note.risk === 'high' ? 'red' : rl.note.risk === 'medium' ? 'warn' : 'grey'}">${esc(rl.note.tag)}</span> risk ${esc(rl.note.risk)}: ${esc(rl.note.note)}<div class="small muted">${esc(rl.note.source === 'llm' ? rl.note.model : 'rule tag')} · ${rl.note.latency_ms == null ? '' : rl.note.latency_ms + ' ms · '}advisory only: it never messages a member on its own.</div>` });
+  if (rl && rl.note) steps.push({ a: 'Pipeline', t: 'Small model tagged the event', s: 'done', b: `<span class="chip ${rl.note.risk === 'high' ? 'red' : rl.note.risk === 'medium' ? 'warn' : 'grey'}">${esc(rl.note.tag)}</span> risk ${esc(rl.note.risk)}: ${esc(rl.note.note)}<div class="small muted">${esc(rl.note.source === 'llm' ? rl.note.model : 'rule tag')} · ${rl.note.latency_ms == null ? '' : rl.note.latency_ms + ' ms · '}advisory only: it never messages a member on its own.</div>` });
+  const an = rl && rl.analysis;
+  if (an) steps.push({ a: 'Analyst', t: 'Analyst reviewed the account history', s: 'done', b: `${esc((an.verdict || {}).assessment || '')}<div class="small muted">${esc(an.action_reason || '')} · ${esc(an.model || 'no model')} · ${an.latency_ms} ms. It scanned ${an.events_seen} tagged events from Postgres. It can only recommend a light check-in; code applies the safety checks.</div>` });
   const preview = (k.msgs && k.msgs.find((m) => m.f === 'bot') ? [k.msgs.find((m) => m.f === 'bot').t] : openingLines(k).slice(0, 2)).map(esc).join('<br>');
   const way = c.ato ? 'By SMS to the phone number on file <b>before</b> the changes, never the attacker\'s session.' : 'As an app notification.';
   steps.push(st >= 2 ? { a: 'Harbor', t: 'Check-in sent', s: 'done', b: `${way} It never asks for a password or code.<div class="quote">${preview}</div>${tm && tm.compose_source ? `<div class="small muted">Written by ${tm.compose_source === 'llm' ? esc(tm.compose_model || 'the model') : 'the safe template (model too slow)'} in ${tm.compose_ms} ms${tm.delivered ? ', delivered ' + new Date(tm.delivered).toLocaleTimeString() : ''}.</div>` : ''}` }
@@ -788,7 +804,7 @@ function consoleHTML() {
     <section class="card op"><div class="op-h"><h2>${esc(memberName(k.mid))} · ${esc(k.tag)} <span class="chip grey">${esc(k.mid)}</span></h2>${chipFor(k)}</div>
       <div class="sum"><div class="sum-k">What this is about</div><p class="sum-h">${esc(headline(k))}</p>
         <div class="sum-chips"><span class="chip ${risk[1]}">${risk[0]}</span>${d.rules.map((r) => `<span class="chip grey">${esc(TRIGGER[r.id] || r.id)}</span>`).join('')}<span class="chip grey">${isAto ? 'SMS to the old phone' : 'App notification'}</span></div>
-        <div class="sum-k" style="margin-top:12px">Conversation so far</div><p class="sum-p">${esc(convoSummary(k))}</p><p class="small" style="margin:6px 0 0"><b>Status:</b> ${esc(stateLine(k))}</p></div>
+        ${analystBlock(k)}<div class="sum-k" style="margin-top:12px">Conversation so far</div><p class="sum-p">${esc(convoSummary(k))}</p><p class="small" style="margin:6px 0 0"><b>Status:</b> ${esc(stateLine(k))}</p></div>
       <h3>Live events</h3>${liveFeed(sc)}
       <h3>Transaction</h3>${txnHTML(k)}
       <h3>What happened, step by step</h3>
@@ -881,7 +897,9 @@ function liveFeed(sc) {
   const decided = rec && p !== 'review' && p !== 'sending';
   const upto = !rec ? 0 : decided ? total + 1 : p === 'sending' ? total : S.live.backend ? (be.phase === 'idle' ? 0 : be.phase === 'loading' ? Math.min(be.done, total) : total) : total;
   const feed = feedFor(sc, upto).slice(-10);
-  const li = (f) => `<li class="${f.cls}"><time>${fmt(f.e.t)}</time><span>${esc(evLabel(f.e))}${f.note ? `<br><span class="small ${f.cls ? '' : 'muted'}">${esc(f.note)}</span>` : ''}</span></li>`;
+  const tg = (rec && ((rec.be.view && rec.be.view.tags) || rec.be.tags)) || {};
+  const chips = (id) => { const t = tg[id]; return t ? `<br><span class="chip grey">${esc(t.category || '')}</span> <span class="chip tg ${t.risk}" title="${esc(t.note || '')}">${esc(t.tag.replace(/_/g, ' '))}${t.new_tag ? ' · new tag' : ''}</span>` : S.live.backend ? '<br><span class="small muted">tagging…</span>' : ''; };
+  const li = (f) => `<li class="${f.cls}"><time>${fmt(f.e.t)}</time><span>${esc(evLabel(f.e))}${f.note ? `<br><span class="small ${f.cls ? '' : 'muted'}">${esc(f.note)}</span>` : ''}${chips(f.e.id)}</span></li>`;
   const state = S.live.backend && be.phase === 'loading' ? `<span class="chip warn">Streaming ${be.done}/${be.total || '?'} events…</span> ` : '';
   return `${state}${feed.length ? `<ul class="tl">${feed.map(li).join('')}</ul>` : `<p class="muted small">${rec ? 'No events yet.' : 'This story has not been started. Pick it in Config to stream its events.'}</p>`}
     ${p === 'sending' ? '<p class="small"><span class="chip warn">Rules running…</span> The payment just arrived.</p>' : decided ? '' : upto >= total && rec ? '<p class="small"><span class="chip grey">Waiting</span> The account picture is built. Nothing decides until an outgoing payment starts.</p>' : ''}`;
@@ -894,25 +912,26 @@ function archSVG() {
     lines.map((l, i) => T(x + 12, y + 46 + i * 18, l)).join('') + (badge ? `<rect x="${x + w - 62}" y="${y + 8}" width="50" height="20" rx="10" class="dg-badge ${badge === 'no LLM' ? 'no' : ''}"/>${T(x + w - 37, y + 22, badge, 'dg-badge-t', 'middle')}` : '') + '</g>';
   const topic = (x, y, w, h, name, sub) => `<g><rect class="dg-box dg-topic" x="${x}" y="${y}" width="${w}" height="${h}" rx="${h / 2 > 22 ? 12 : h / 2}"/>${T(x + w / 2, y + 22, name, 'dg-t', 'middle')}${sub ? T(x + w / 2, y + 40, sub, 'dg-s', 'middle') : ''}</g>`;
   const a = (d, dash) => `<path class="dg-arrow${dash ? ' dash' : ''}" d="${d}" marker-end="url(#ah2)"/>`;
-  return `<svg viewBox="0 0 1440 720" class="dg" role="img" aria-label="Harbor architecture: events flow through Kafka to a rules scorer and an LLM tagger, alerts go to a notification agent that messages the member, and a retro job re-enters findings">
+  return `<svg viewBox="0 0 1440 790" class="dg" role="img" aria-label="Harbor architecture: the browser app streams a story into Kafka through the API server, a rules scorer and an LLM tagger process it into Postgres, alerts go to the agent service that messages the member and lets an employee take over, and a retro job re-enters findings">
   <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" class="dg-head"/></marker></defs>
-  ${box(20, 40, 170, 120, '', 'Event sources', ['core banking · mobile', 'online · branch · call', 'center. Demo: CSV', 'replayer'])}
+  <g transform="translate(0,70)">
+  ${box(20, 40, 170, 120, '', 'Event sources', ['core banking · mobile', 'online · branch · call', 'center. Demo: the app', 'streams a story live'])}
   ${a('M190 95H230')}
   ${topic(230, 55, 160, 80, 'events.raw', 'key = member_id')}${T(310, 152, '6 partitions, ordered per member', 'dg-s', 'middle')}
   ${a('M390 95H430')}
-  ${box(430, 40, 230, 120, 'dg-decide', 'Scorer  (fast path)', ['rules engine, per-member state', 'flag the account, then check each payment', 'deterministic, explainable', 'p50 about 1 ms per event'], 'no LLM')}
+  ${box(430, 40, 230, 120, 'dg-decide', 'Scorer  (fast path)', ['rules engine, per-member state', 'flag account, then check payment', 'deterministic, explainable', 'p50 about 1 ms per event'], 'no LLM')}
   ${a('M660 112H690V198H710')}${T(700, 106, 'every event', 'dg-s')}
   ${a('M660 62H1000')}${T(830, 54, 'alerts (outbox pattern)', 'dg-s', 'middle')}
   ${a('M545 160V190')}
-  ${topic(430, 190, 230, 56, 'events.scored', 'key events only')}
+  ${topic(430, 190, 230, 56, 'events.scored', 'every event, after the rules')}
   ${a('M545 246V296')}
-  ${box(430, 296, 230, 130, 'dg-teal', 'Tagger  (slow path)', ['LLM tags + analyst note', 'advisory only. Never messages', 'a member. Rules quiet + model', 'says high: human review queue'], 'LLM')}
+  ${box(430, 296, 230, 130, 'dg-teal', 'Tagger  (every event)', ['small model + tools over the', 'tags table: list, or create one', 'advisory only, never messages a', 'member. Rules quiet + model', 'high: human review queue'], 'LLM')}
   ${a('M660 360H710')}${T(685, 352, 'notes', 'dg-s', 'middle')}
   <g><rect class="dg-box" x="710" y="170" width="250" height="290" rx="12"/>${T(724, 196, 'Postgres', 'dg-t')}${T(724, 216, 'the full history, alerted or not')}
-    ${['events  (idempotent on event_id)', 'decisions  (level, rules, latency)', 'member_state  (survives restarts)', 'alerts  (outbox)', 'event_notes  (LLM tags + notes)', 'review_queue  (gray zone)', 'cases · messages · case_alerts', 'retro_findings  (deduped)'].map((l, i) => T(724, 246 + i * 24, '• ' + l)).join('')}</g>
+    ${['events  (idempotent on event_id)', 'decisions  (level, rules, latency)', 'member_state  (survives restarts)', 'alerts  (outbox)', 'tags  (vocabulary the model extends)', 'event_notes  (category + tag + note)', 'analyses  (analyst verdicts)', 'review_queue  (gray zone)', 'cases · messages · case_alerts', 'retro_findings  (deduped)'].map((l, i) => T(724, 244 + i * 20, '• ' + l)).join('')}</g>
   ${topic(1000, 40, 34, 130, '', '')}${T(1017, 112, 'alerts.risk', 'dg-s', 'middle').replace('<text', '<text transform="rotate(-90 1017 112)"')}
   ${a('M1034 100H1080')}
-  ${box(1080, 40, 300, 230, 'dg-teal', 'Agent service', ['consumes alerts.risk', 'merges alerts into ONE open case', 'rate limit (not for takeover)', 'picks channel: takeover goes to the', 'phone on file BEFORE the change', 'writes a personalized message (LLM)', 'conversation API + guardrails', 'no reply in 10 min: escalate'], 'LLM')}
+  ${box(1080, 40, 300, 230, 'dg-teal', 'Agent + API  :8787', ['consumes alerts.risk', 'merges alerts into ONE open case', 'rate limit (not for takeover)', 'takeover: phone on file BEFORE change', 'first message: LLM, template if slow', 'chat API + guardrails; employee can', '   take over and hand back', 'no reply in 10 min: escalate'], 'LLM')}
   ${a('M1080 232H960', true)}${T(1020, 224, 'reads / writes', 'dg-s', 'middle')}
   ${a('M1230 270V300')}
   ${topic(1130, 300, 200, 50, 'notifications.out', '')}
@@ -922,14 +941,23 @@ function archSVG() {
   ${box(1130, 480, 200, 70, 'dg-ok', 'Member', ['replies via chat API'])}
   ${a('M1130 515H1060V245H1080', true)}
   ${a('M1380 150H1410V620H1380')}${T(1425, 400, 'escalate', 'dg-s', 'middle').replace('<text', '<text transform="rotate(90 1425 400)"')}
-  ${box(1080, 580, 300, 110, 'dg-ok', 'Employee console', ['held payments, case timeline, handoff', 'summary, AI notes, review queue,', 'coach questions'])}
+  ${box(1080, 580, 300, 110, 'dg-ok', 'Employee console', ['live events, summary, transaction', 'conversation: take over / hand back', 'actions that follow you as you scroll'])}
   ${box(430, 500, 230, 130, 'dg-arm', 'Retro job  (cron, 24 h)', ['SQL detectors over the full', 'history: long windows, cumulative', 'amounts, silent cases. LLM writes', 'the insight sentence'], 'LLM')}
   ${a('M660 540H710V460')}${T(722, 500, 'reads history', 'dg-s')}
-  ${a('M660 600H985V190H1017V170')}${T(800, 592, 'findings re-enter alerts.risk', 'dg-s', 'middle')}
+  ${a('M660 622H985V190H1017V170')}${T(822, 614, 'findings re-enter alerts.risk', 'dg-s', 'middle')}
+  ${box(710, 482, 250, 118, 'dg-teal', 'Analyst agent', ['runs on a trigger. Scans Postgres:', 'tagged history, cases, rule alerts.', 'May start a light check-in; code', 'applies the safety checks'], 'LLM')}
+  ${a('M830 482V462', true)}${T(840, 474, 'scans', 'dg-s')}
+  ${a('M660 410H685V532H710', true)}${T(678, 470, 'analysis.requests', 'dg-s', 'end')}
+  ${a('M960 540H1017V172')}${T(1024, 534, 'check-in', 'dg-s')}
   ${topic(230, 300, 160, 56, 'events.dlq', 'failed after 3 tries')}
   ${a('M310 300V155', true)}
   <g><rect class="dg-box" x="20" y="480" width="370" height="210" rx="12"/>${T(34, 506, 'Design rules', 'dg-t')}
     ${['An alert never waits on an LLM.', 'Key = member_id: one member, one ordered', '   partition, so stateful rules stay correct.', 'At-least-once delivery + idempotent keys', '   (event_id, alert_id): replays are safe.', 'LLMs are advisory. They write notes and', '   messages; rules and code decide actions.', 'Every failure lands in the DLQ with a redrive.'].map((l, i) => T(34, 532 + i * 20, l)).join('')}</g>
+  </g>
+  <g><rect class="dg-box dg-ok" x="20" y="10" width="1400" height="62" rx="12"/>${T(34, 34, 'Browser app  (same page, localhost:8787)', 'dg-t')}
+    ${T(34, 56, 'Member app: pick a story, Send payment, chat (voice or text)   ·   Employee console: live events, summary, actions, take over the chat   ·   each story keeps its own state')}</g>
+  ${a('M310 72V122')}${T(322, 100, 'story events stream in (paced), then the payment', 'dg-s')}
+  ${a('M1230 72V132')}${T(1218, 100, 'chat · take over · actions', 'dg-s', 'end')}
   </svg>`;
 }
 const BACKEND = location.protocol === 'file:' ? 'http://localhost:8787' : '';
@@ -981,10 +1009,13 @@ node services/replayer.js --members M1003,M1001,M1039,M1057 --rate 60</pre></div
   <div class="tiles">${tile(d.events.toLocaleString(), 'events scored')}${tile(`${lvl('none')} / ${lvl('confirm')} / ${lvl('hold')}`, 'payment decisions: none / light / pause')}${tile(d.latency.p50 + ' ms', `median decision time (max ${d.latency.max})`)}
     ${tile(cs('awaiting_member') + cs('in_conversation') + ' open', `cases (${cs('escalated_human')} escalated to a human, ${cs('resolved')} resolved)`)}${tile(`${risk('low')} / ${risk('medium')} / ${risk('high')}`, 'AI tags: low / medium / high')}${tile(d.review_open, 'in human review queue (gray zone)')}${tile(d.retro.reduce((a, r) => a + r.n, 0), 'retro findings')}</div>
   <div class="sim"><section class="card"><h2>Cases</h2>${list}<h3>Recent alerts with AI notes</h3><div class="tablewrap"><table><thead><tr><th>Member</th><th>Source</th><th>Rule</th><th>Level</th><th>AI note</th></tr></thead><tbody>${rows}</tbody></table></div></section>
-  <section class="card">${det}</section></div>`;
+  <section class="card">${det}</section></div>
+  <div class="sim" style="margin-top:16px"><section class="card"><h2>Tag vocabulary</h2><p class="muted small" style="margin-top:0">The small model reads this table and may add a tag when none fits. Green tags were created by the model.</p>
+    ${(d.tags || []).map((t) => `<span class="chip ${t.created_by === 'llm' ? 'green' : 'grey'}" title="${esc(t.description)}">${esc(t.name.replace(/_/g, ' '))} · ${t.uses}</span>`).join(' ') || '<span class="muted small">No tags yet.</span>'}</section>
+  <section class="card"><h2>Analyst reviews</h2>${(d.analyses || []).length ? `<div class="tablewrap"><table><thead><tr><th>Member</th><th>Trigger</th><th>Read</th><th>Decision</th></tr></thead><tbody>${d.analyses.map((a) => `<tr><td>${esc(a.member_id)}</td><td class="small">${esc(a.trigger_reason || '')}</td><td class="small">${esc((a.verdict || {}).assessment || '')}</td><td><span class="chip ${a.action === 'started_conversation' ? 'green' : a.action === 'blocked' ? 'warn' : 'grey'}">${esc(a.action.replace('_', ' '))}</span><div class="small muted">${esc(a.action_reason || '')}</div></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted small">No reviews yet. The analyst runs when a rule alerts or an event is tagged medium or high.</p>'}</section></div>`;
 }
 function archHTML() {
-  return `<div class="card"><h2>System architecture</h2><p class="muted">Two paths from the same event stream. The <b>fast path</b> decides alerts with deterministic rules in about a millisecond. The <b>slow path</b> uses an LLM to add tags and notes, and can only queue a human review. Alerts reach a notification agent that owns the conversation. A retro cron re-enters findings through the same topic.</p>${archSVG()}</div>`;
+  return `<div class="card"><h2>System architecture</h2><p class="muted">The browser app talks to one API server. Choosing a story streams that member's events into Kafka; Send payment sends the trigger event. Two paths then process the same stream. The <b>fast path</b> decides alerts with deterministic rules in about a millisecond. The <b>slow path</b> tags every event with a small model that can read and extend a tag table; it can only queue a human review. When something notable is tagged, an <b>analyst agent</b> scans Postgres for the member's tagged history and may recommend a light check-in, behind safety checks in code. Alerts reach a notification agent that owns the conversation. A retro cron re-enters findings through the same topic. The hosted GitHub Pages copy has no backend: it runs the same rules in the browser.</p>${archSVG()}</div>`;
 }
 
 /* ---------- notes ---------- */
