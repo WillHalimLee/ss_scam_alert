@@ -17,27 +17,27 @@ const NEVER = 'Sound will never ask for your password or a code, and never asks 
 
 /* ---------- outbound message composition ---------- */
 function template(a, name) {
-  const hi = name ? `Hi ${name}, this is Harbor from Sound.` : 'Hi, this is Harbor from Sound.';
+  const hi = name ? `Hi ${name}, this is Harbor, your security analyst at Sound.` : 'Hi, this is Harbor, your security analyst at Sound.';
   const amt = a.amount ? money(a.amount) : 'a payment';
   if (a.source === 'analyst') return `${hi} I noticed some activity on your account that I'd like to check with you: ${a.summary} Nothing has been paused, and nothing is wrong on your side. If anything looks unfamiliar, you can talk to a Sound employee right away. ${NEVER}`;
   if (a.source === 'retro') return `${hi} I'm checking in on some recent activity: ${a.summary} Nothing is wrong on your side. If anything looks unfamiliar, you can talk to a Sound employee right away. ${NEVER} Does any of it look unfamiliar to you?`;
-  if (a.ato) return `${hi} A few minutes ago the password, email and phone number on your account were changed, and a ${amt} ${railWord(a.rail)} to a new recipient was started. I've paused it, and nothing has left your account. Was that you? Open your Sound app to review. ${NEVER}`;
-  if (a.level === 'confirm') return `${hi} Quick check on your ${amt} ${railWord(a.rail)} to a newer recipient, since it's more than you usually send. ${NEVER} What is this payment for?`;
-  return `${hi} Your ${amt} ${railWord(a.rail)} is paused for a quick check. Nothing has been sent, and you're in control. ${NEVER} What is this payment for?`;
+  if (a.ato) return `${hi} A few minutes ago the password, email and phone number on your account were changed, and a ${amt} ${railWord(a.rail)} to a new recipient was started. I've paused it, so nothing has left your account, and you're in control. Was that you? Either answer is okay. Open your Sound app to review. ${NEVER}`;
+  if (a.level === 'confirm') return `${hi} I wanted to check in on your ${amt} ${railWord(a.rail)} to a newer recipient, since it's more than you usually send. There's no rush. ${NEVER} Could you tell me what this payment is for?`;
+  return `${hi} I'm sorry to interrupt. I've paused your ${amt} ${railWord(a.rail)} for a quick check, so nothing has been sent, and you're in control. There's no rush. ${NEVER} Could you tell me what this payment is for?`;
 }
-const COMPOSE_SYSTEM = `You write the FIRST outbound message from Harbor, a personal security analyst at Sound Credit Union, to a member about their account. 2-3 short sentences, plain language, warm and calm. Return ONLY JSON {"message": "..."}.
-Rules: say only what Sound's systems know, in plain words, from the facts given; if a payment is paused say nothing has been sent and the member is in control; you do NOT yet know why the member is doing this, so do not mention scams, impersonation, police, banks or government, and give no warnings or advice about them; never say "scam", "fraud" or "criminal"; never ask for passwords, PINs or codes; do not promise safety or recovery; do not include links; include that Sound never asks for a password or code or to move money; END with exactly one open question the member can answer in their own words (if takeover is suspected, ask whether they made the changes; otherwise ask what the payment is for). Use the member's first name only if given.
-The input JSON has a must_say list: every item must be stated in your own words. Style example (change the wording to fit the facts): {"message": "Hi Dana, this is Harbor from Sound. Your $4,000 wire is paused for a quick check, and nothing has been sent. You're in control. Sound never asks for your password or a code, or to move money. What is this payment for?"}`;
+const COMPOSE_SYSTEM = `You write the FIRST outbound message from Harbor, the member's personal security analyst at Sound Credit Union, to a member about their account. Plain language, warm, calm and caring, like a kind person at the credit union who is looking out for them: 3-5 short sentences. Open with "Hi <first name>, this is Harbor, your security analyst at Sound." (without the name if none is given). Briefly acknowledge you may be interrupting, and reassure them there is no rush. Return ONLY JSON {"message": "..."}.
+Rules: say only what Sound's systems know, in plain words, from the facts given; if a payment is paused say nothing has been sent and the member is in control; you do NOT yet know why the member is doing this, so do not mention scams, impersonation, police, banks or government, and give no warnings or advice about them; never say "scam", "fraud" or "criminal"; never ask for passwords, PINs or codes; do not promise safety or recovery; do not include links; include that Sound never asks for a password or code or to move money; END with exactly one gentle open question the member can answer in their own words (if takeover is suspected, ask whether they made the changes and say either answer is okay; otherwise ask kindly what the payment is for). Write amounts like $1,574 (no cents). Use the member's first name only if given.
+The input JSON has a must_say list: every item must be stated in your own words. Style example (change the wording to fit the facts): {"message": "Hi Dana, this is Harbor, your security analyst at Sound. I'm sorry to interrupt. I've paused your $4,000 wire for a quick check, so nothing has been sent, and you're in control. There's no rush. Sound never asks for your password or a code, or to move money. Could you tell me what this payment is for?"}`;
 async function compose(a, name) {
   const t0 = Date.now(), fallback = { text: template(a, name), source: 'template', ms: 0 };
   try {
     const out = await Promise.race([llm.completeJSON(COMPOSE_SYSTEM, JSON.stringify({ first_name: name || null, source: a.source, level: a.level, takeover_suspected: !!a.ato, payment_already_completed: !!a.completed,
-      amount: a.amount || null, rail: railWord(a.rail), why: whyFor(a),
-      must_say: (a.completed ? ['the payment already went through'] : a.level === 'hold' ? ['the payment is paused', 'nothing has been sent', 'the member is in control'] : ['this is a quick check, nothing is blocked']).concat(a.ato ? ['the password, email and phone number on the account were changed just before this payment started'] : []) }), 'compose', a.member_id),
+      amount: a.amount ? money(a.amount) : null, rail: railWord(a.rail), why: whyFor(a),
+      must_say: (a.completed ? ['the payment already went through'] : a.level === 'hold' ? ['the payment is paused', 'nothing has been sent', 'the member is in control'] : ['this is just a quick check', 'the payment is NOT paused or blocked: do not use the words paused, held or blocked']).concat(a.ato ? ['the password, email and phone number on the account were changed just before this payment started'] : []) }), 'compose', a.member_id),
       new Promise((_, no) => setTimeout(() => no(new Error('compose timeout')), cfg.composeTimeoutMs))]);          // a slow model must not hold the member up: fall back to the template
     const text = out && String(out.message || '').replace(/\s+/g, ' ').trim();
-    const heldOk = a.level !== 'hold' || a.completed || (/\b(paused|on hold|held)\b/i.test(text) && /\bnothing\b/i.test(text));      // a held payment must be said to be paused, with nothing sent
-    if (!text || text.length > 700 || agent.BAD_REPLY.some((r) => r.test(text)) || !/never ask/i.test(text) || !heldOk || !/\?/.test(text) || (a.ato && !/password/i.test(text))) return Object.assign(fallback, { ms: Date.now() - t0 });   // otherwise the safe template is used
+    const heldOk = a.completed || (a.level === 'hold' ? /\b(paused|on hold|held)\b/i.test(text) && /\bnothing\b/i.test(text) : !/\b(paused|on hold|held|blocked)\b/i.test(text));      // a held payment must be said to be paused, with nothing sent
+    if (!text || text.length > 700 || agent.BAD_REPLY.some((r) => r.test(text)) || !/never ask/i.test(text) || !heldOk || !/\?/.test(text) || !/security analyst/i.test(text) || (a.ato && !/password/i.test(text))) return Object.assign(fallback, { ms: Date.now() - t0 });   // otherwise the safe template is used
     return { text, source: 'llm', ms: Date.now() - t0, model: (llm.provider() || {}).model };
   } catch (e) { return Object.assign(fallback, { ms: Date.now() - t0 }); }
 }
@@ -51,7 +51,7 @@ async function say(caseId, direction, body, source, channel, memberId, meta, del
 }
 function ctxFrom(a) {
   return { amount: a.amount ? money(a.amount) : '', rail: railWord(a.rail), recipient: a.rail === 'Cash' ? '' : a.recipient_status === 'New' ? 'someone new' : 'a recipient', reasons: whyFor(a),
-    ato: !!a.ato, level: a.level === 'confirm' || a.level === 'followup' ? 'confirm' : 'hold', completed: !!a.completed, trustedContact: !!a.trusted_contact };
+    name: a.name || '', ato: !!a.ato, level: a.level === 'confirm' || a.level === 'followup' ? 'confirm' : 'hold', completed: !!a.completed, trustedContact: !!a.trusted_contact };
 }
 async function onAlert(a) {
   const dupe = await q('select 1 from case_alerts where alert_id=$1', [a.alert_id]);
@@ -77,7 +77,7 @@ async function onAlert(a) {
   const caseId = 'C-' + crypto.randomBytes(3).toString('hex').toUpperCase();
   const channel = a.ato ? 'sms_pre_change_phone' : 'app_push';                      // takeover: never the contact details the attacker may have changed
   const trusted = (await q(`select bool_or(trusted_contact) t from events where member_id=$1`, [a.member_id])).rows[0].t;
-  const ctx = ctxFrom(Object.assign({}, a, { trusted_contact: trusted }));
+  const ctx = ctxFrom(Object.assign({}, a, { trusted_contact: trusted, name: mem.first_name }));
   await q(`insert into cases (case_id, member_id, status, channel, ato, ctx, due_at) values ($1,$2,'awaiting_member',$3,$4,$5, now() + ($6 || ' seconds')::interval)`,
     [caseId, a.member_id, channel, !!a.ato, JSON.stringify(ctx), String(cfg.caseTimeoutSec)]);
   await q('insert into case_alerts (case_id, alert_id) values ($1,$2)', [caseId, a.alert_id]);

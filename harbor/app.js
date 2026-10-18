@@ -189,21 +189,21 @@ const PURPOSE = [{ t: 'Buying a home or vehicle', go: 'home' }, { t: 'Helping a 
 function node(id, c) {
   const first = c.dec.rules[0];
   const N = {
-    ato0: { bot: [`Hi, this is Harbor, Sound's security analyst. Sorry to interrupt.`, `A few minutes ago the password, email address and phone number on your account were changed, and a ${c.amt} payment to a new recipient was started. I've paused it. <b>Nothing has left your account.</b>`, 'Was that you?'],
+    ato0: { bot: [`Hi, this is Harbor, your security analyst at Sound. I'm sorry to interrupt, and I hope this is an okay moment.`, `A few minutes ago the password, email address and phone number on your account were changed, and a ${c.amt} payment to a new recipient was started. I've paused it, so <b>nothing has left your account</b>, and you're in control.`, 'Was that you? Either answer is okay.'],
       choices: [{ t: 'Yes, that was me', go: 'ato_yes' }, { t: 'No, that wasn\'t me', end: 'ato_stop' }, { t: 'I\'m not sure', end: 'ato_stop' }] },
     ato_yes: { bot: ['Thanks for telling me. Because contact details changed at the same time, I\'d like a Sound employee to call you back on the number we had <i>before</i> today. It takes about 5 minutes.'],
       choices: [{ t: 'OK, call me', end: 'callback' }, { t: 'Cancel the payment', end: 'cancelled' }] },
-    planned: { bot: [`Hi, I'm Harbor. This ${c.amt} ${c.rail} matches the <b>Planned Big Payment</b> you set up (${PLANS[c.sc.mid]?.[0].label ?? 'declared earlier'}). Because it's large, one quick step.`, 'Did you confirm the account details with your title company by phone, using a number you already had?'],
+    planned: { bot: [`Hi, this is Harbor, your security analyst at Sound. This ${c.amt} ${c.rail} matches the <b>Planned Big Payment</b> you set up (${PLANS[c.sc.mid]?.[0].label ?? 'declared earlier'}). Because it's large, there's just one quick step.`, 'Did you confirm the account details with your title company by phone, using a number you already had?'],
       choices: [{ t: 'Yes, I verified them', end: 'callback_fast' }, { t: 'Not yet', go: 'verify_warn' }] },
-    light: { bot: [`Hi, I'm Harbor. Quick check: this payment goes to someone fairly new on your account and it's more than you usually send. Do you know them well?`],
+    light: { bot: [`Hi, this is Harbor, your security analyst at Sound. I wanted to check in: this payment goes to someone fairly new on your account, and it's more than you usually send. Do you know them well?`],
       choices: [{ t: 'Yes, I know them', go: 'light_yes' }, { t: 'Let me check first', go: 'family' }] },
     light_yes: { bot: ['Thanks! Have you spoken to them directly, on a phone number you already had?'],
       choices: [{ t: 'Yes, I spoke with them', end: 'ok' }, { t: 'Not exactly', go: 'family_warn' }] },
-    start: { bot: [`Hi, I'm Harbor, Sound's security analyst. I paused your ${c.pay} for a quick check. <b>Nothing has gone out, and you're in control.</b>`,
+    start: { bot: [`Hi, this is Harbor, your security analyst at Sound. I'm sorry to interrupt. I paused your ${c.pay} for a quick check, so <b>nothing has gone out, and you're in control.</b> There's no rush.`,
       memberReason(c),
-      'What\'s this payment for?'],
+      'Could you tell me what this payment is for?'],
       choices: PURPOSE },
-    fallback: { bot: ['Let me guide you with a few quick questions instead.', 'What is this payment for?'], choices: PURPOSE },
+    fallback: { bot: ['Let me guide you with a few quick questions instead.', 'Could you tell me what this payment is for?'], choices: PURPOSE },
     fallback_ato: { bot: ['Let me ask a couple of quick questions instead.', 'Were the password, email and phone changes made by you?'], choices: [{ t: 'Yes, that was me', go: 'ato_yes' }, { t: 'No, that wasn\'t me', end: 'ato_stop' }, { t: 'I\'m not sure', end: 'ato_stop' }] },
     home: { bot: ['Big purchases are a good time to double-check payment details.', 'Did you get these payment details straight from the title company, lender or seller and confirm them by phone using a number you already had?'],
       choices: [{ t: 'Yes, I verified them', end: 'ok' }, { t: 'I\'m not sure', go: 'verify_warn' }] },
@@ -306,7 +306,7 @@ function liveChips(ch) {
 }
 function liveCtx(c) {
   return { amount: c.amt, rail: c.rail, recipient: c.recip, reasons: [memberReason(c).replace(/\s*So I wanted to check in first\.?/, '').replace(/\s*I wanted to make sure it's really you\.?/, '')], ato: c.ato, level: c.dec.level,
-    trustedContact: D.events[c.sc.mid].some((e) => e.t <= c.dec.t && e.tc) };
+    trustedContact: D.events[c.sc.mid].some((e) => e.t <= c.dec.t && e.tc), name: c.name === 'you' ? '' : c.name };
 }
 async function sendLive(text) {
   const ch = S.chat, L = ch && ch.live; text = (text || '').trim().slice(0, 600);
@@ -391,7 +391,7 @@ function phoneHTML() {
   }
   if (p.step === 'lock') {
     const real = S.live.mode === 'live' ? openingText() : null;
-    const text = real ? real : c.ato ? 'Sound: A payment was paused on your account. Open your Sound app to review. We will never ask for your password or a code.' : 'Sound Harbor: Your payment is paused for a quick check. Nothing was sent. Open the Sound app to review.';
+    const text = real ? real : c.ato ? 'Sound: A payment was paused on your account. Open your Sound app to review. We will never ask for your password or a code.' : 'Harbor, your security analyst at Sound: your payment is paused for a quick check, and nothing was sent. Open the Sound app whenever you\'re ready.';
     const title = c.ato ? 'A payment was paused on your account' : `Your ${money(dec.amt)} ${railWord(dec.rail)} is paused`;
     return { html: `<div class="lock"><p class="ldate">Saturday, October 17</p><div class="time" style="text-align:center">9:41</div><p class="lwho">${c.ato ? 'Sarah\'s phone (number on file before today)' : 'Your phone'}</p>
       <div class="notif"><div class="nmark" aria-hidden="true">⚓</div><div style="flex:1;min-width:0"><div class="nhead"><b>Harbor${c.ato ? ' · SMS to the old number' : ''}</b><span>now</span></div><div class="nt">${esc(title)}</div><div class="nb">${esc(text)}</div>
@@ -495,20 +495,23 @@ window.HarborVoice = { matchChip };
 
 /* ---------- collapsible panels + model log dashboards ---------- */
 S.ui = { demoOpen: false, saw: true, log: true, raw: {}, d: {}, qOpen: false, qText: '' };
-S.log = { rows: [], err: null };
+S.log = { rows: [], err: null, mid: null, at: 0 };
 function coll(k, title, body, badge) {
   const open = S.ui[k];
   return `<div class="card coll"><button type="button" class="coll-h" data-act="coll" data-k="${k}" aria-expanded="${open}"><span class="coll-t">${title}${badge || ''}</span>
     <svg class="chev ${open ? 'open' : ''}" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>${open ? `<div class="coll-b">${body}</div>` : ''}</div>`;
 }
-async function refreshLog() {
-  const ch = S.chat; if (!ch || !ch.live) { S.log.rows = []; return; }
+const selRec = () => Object.values(S.rec).find((r) => r.mid === S.sel) || null;
+const digits = (x) => String(x || '').replace(/\D/g, '');
+async function refreshLog() {                                              // model calls for the conversation of the member selected in the console
+  const rec = selRec(), ch = rec && rec.chat; S.log.mid = S.sel; S.log.at = Date.now();
+  if (!ch || !ch.live) { S.log.rows = []; return; }
   try {
-    const j = await (await fetch(API + '/api/traces?limit=300')).json();
+    const j = await (await fetch(API + '/api/traces?limit=300')).json(), amt = digits(liveCtx(ch.c).amount);
     S.log.err = null;
-    S.log.rows = j.traces.filter((t) => t.kind === 'chat' && Date.parse(t.ts) >= ch.startedAt - 1500).sort((a, b) => (a.ts < b.ts ? -1 : 1));
+    S.log.rows = j.traces.filter((t) => t.kind === 'chat' && Date.parse(t.ts) >= ch.startedAt - 1500 && (!t.input || !t.input.ctx || digits(t.input.ctx.amount) === amt)).sort((a, b) => (a.ts < b.ts ? -1 : 1));
   } catch (e) { S.log.err = 'unreachable'; }
-  if (S.tab === 'member') render();
+  if (S.tab === 'console') render();
 }
 const SIGNAL_ORDER = ['authority_pressure', 'secrecy_or_isolation', 'urgency', 'unverified_contact', 'unmet_online_contact', 'growing_amounts', 'unusual_method', 'relative_pressure', 'credential_shared', 'member_denies_changes', 'member_confirms_changes', 'member_verified', 'own_initiative', 'wants_person', 'member_distressed'];
 function logBadge() {
@@ -523,10 +526,10 @@ function barsSVG(vals, color, unit) {
   }).join('') + '</svg>';
 }
 function logHTML() {
-  const ch = S.chat;
-  if (!S.live.avail) return '<p class="muted">Model logs need the local server. Run <code>task run</code>, open <b>localhost:8787</b>, and switch to Live AI.</p>';
-  if (S.live.mode !== 'live') return '<p class="muted">The guided script makes no model calls, so there is nothing to log. Switch to <b>Live AI</b> in Demo controls and talk to Harbor. Each reply appears here with what the model understood and what the code did about it.</p>';
-  if (!ch || !ch.live) return '<p class="muted">Press <b>Send payment</b> on the phone and open the chat. The model\'s reasoning for this conversation appears here.</p>';
+  const rec = selRec(), ch = rec && rec.chat;
+  if (!S.live.avail) return '<p class="muted">Model logs need the local server. Run <code>task run</code> and open <b>localhost:8787</b>.</p>';
+  if (!ch) return '<p class="muted">The member has not opened the chat yet. Once they talk to Harbor, each model call for this conversation appears here.</p>';
+  if (!ch.live) return '<p class="muted">This conversation used the guided script, which makes no model calls, so there is nothing to log. Pick <b>Live AI</b> in Config and start the story again to see what the model understood and what the code did about it.</p>';
   const rows = S.log.rows;
   if (S.log.err) return '<p class="muted">Could not reach the trace log. Is the server running?</p>';
   if (!rows.length) return '<p class="muted">No model calls yet. Send Harbor a message and its reasoning shows up here.</p>';
@@ -552,7 +555,7 @@ function logHTML() {
       <button type="button" class="linkbtn" data-act="rawt" data-id="${r.id}">${open ? 'Hide' : 'Show'} raw model output</button>${open ? `<pre class="rawpre">${esc((r.output && r.output.raw) || '')}</pre>` : ''}</div>`;
   }).join('');
   const meter = [0, 1, 2].map((i) => `<span class="seg ${i <= level ? 'on ' + tone[level] : ''}"></span>`).join('');
-  return `<p class="small muted" style="margin-top:0">This model has no hidden chain of thought. What it exposes, and what our code does with it, is below. All of it comes from the real calls for this conversation.</p>
+  return `${understandingHTML(ch.live)}<p class="small muted" style="margin-top:0">This model has no hidden chain of thought. What it exposes, and what our code does with it, is below. All of it comes from the real calls for this conversation.</p>
     <div class="tiles dash"><div class="tile"><b>${rows.length}</b>model calls</div><div class="tile"><b>${Math.round(lat.reduce((a, b) => a + b, 0) / rows.length)} ms</b>avg response</div><div class="tile"><b>${tin.toLocaleString()} / ${tout}</b>tokens in / out</div><div class="tile"><b>${avgTps}</b>tokens per second</div></div>
     <div class="dash2"><div><h3>Risk read so far</h3><div class="meter" role="img" aria-label="Risk read ${names[level]}">${meter}</div><p class="small" style="margin:6px 0 0"><span class="chip ${tone[level]}">${names[level]}</span> ${redSeen.size ? `${redSeen.size} red-flag signal${redSeen.size > 1 ? 's' : ''}: ${[...redSeen].map((s) => esc(SIGNAL_LABEL[s] || s)).join(', ')}` : 'no red-flag signals'}</p>
       <p class="small muted" style="margin:6px 0 0">${redSeen.size ? 'Code response: "This looks fine, continue" is hidden and a person is offered first.' : 'Code response: "continue" only appears after the member says they verified or decided on their own.'}</p></div>
@@ -596,9 +599,7 @@ function memberHTML() {
       ${coll('saw', esc(sc.name) + ' · ' + esc(sc.tag), `<p class="muted small"><b>Ground truth, hidden from Harbor:</b> ${esc(m.summary)}<br>Outcome in the data: <b>${esc(m.outcome)}</b>${m.loss ? ' · net loss ' + money(m.loss) : ''}</p>
       <h3>What Harbor saw (event stream) ${seen.state}</h3>${seen.upto ? timelineHTML(sc.mid, dec, sc.id === 'michael' ? 14 : 9, seen.upto) : '<p class="muted small">No events yet.</p>'}
       ${seen.sent ? `<h3>Harbor's decision at payment start ${levelChip(dec.level)}</h3>${rules}${sup}` : '<p class="muted small">Harbor decides the moment the payment starts. Press Send payment.</p>'}
-      ${S.chat && S.chat.live ? understandingHTML(S.chat.live) : ''}
       ${c.ato ? '<p class="small muted">Takeover path: Harbor texts the number on file <b>before</b> the change, never the attacker\'s session, and never asks for credentials or codes.</p>' : ''}`)}
-      ${coll('log', 'Model log for this conversation', logHTML(), logBadge())}
     </section></div>`;
 }
 
@@ -813,7 +814,7 @@ function consoleHTML() {
         ${disc('ev', 'Evidence timeline', timelineHTML(k.mid, d, 8))}
         ${disc('coach', 'Conversation coach: open questions, no blame', `<ul class="coach">${coach}</ul><p class="small muted">Say: "I'm checking because it's your money." Avoid: "suspicious", "you've been scammed".</p>`)}
         ${disc('log', 'Case log', `<div class="log">${k.log.map((l) => '• ' + esc(l)).join('<br>')}</div>`)}
-      </div></section></div>${actionsAside(k)}</div></div>`;
+      </div></section>${coll('log', 'Model log for this conversation', logHTML(), logBadge())}</div>${actionsAside(k)}</div></div>`;
 }
 
 /* ---------- simulator ---------- */
@@ -1043,6 +1044,7 @@ function render() {
   $('#view').innerHTML = { member: memberHTML, console: consoleHTML, sim: simHTML, arch: archHTML, pipe: pipeHTML, notes: notesHTML }[S.tab]();
   const cb = $('#chatbody'); if (cb) cb.scrollTop = cb.scrollHeight;
   { const ei = document.getElementById('empin'); if (ei && S.ui.empFocus && document.activeElement !== ei) { ei.focus(); ei.setSelectionRange(ei.value.length, ei.value.length); } }
+  if (S.tab === 'console' && S.ui.log && (S.log.mid !== S.sel || Date.now() - S.log.at > 4000)) refreshLog();
   const cv = document.querySelector('.convo .cbody'); if (cv) cv.scrollTop = cv.scrollHeight;
   const cb2 = $('#cfgBtn'); if (cb2) { cb2.setAttribute('aria-expanded', !!S.ui.demoOpen); $('#cfgInfo').textContent = SCENARIOS.find((x) => x.id === S.sc).name + ' · ' + (S.live.mode === 'live' ? 'Live AI' : 'Guided'); }
   const cp = $('#cfgpop'); if (cp) cp.innerHTML = configPopHTML();
